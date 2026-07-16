@@ -1,0 +1,35 @@
+{
+  "name": "mastra-image-agent",
+  "version": "1.0.0",
+  "description": "Proof-of-concept image generation agent built with the Mastra framework. Transforms natural language prompts into high-quality images with configurable styles, aspect ratios, and generation parameters.",
+  "type": "module",
+  "scripts": {
+    "dev": "mastra dev",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "run:agent": "tsx scripts/run-agent.ts",
+    "run:workflow": "tsx scripts/run-workflow.ts",
+    "run:batch": "tsx scripts/batch-generate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "mastra",
+    "ai-agent",
+    "image-generation",
+    "dall-e",
+    "stability-ai",
+    "prompt-enhancement"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@mastra/core": "^1.17.0",
+    "zod": "^3.24.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "mastra": "^1.17.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0"
+  }
+}
