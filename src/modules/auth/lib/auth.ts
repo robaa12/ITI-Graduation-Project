@@ -1,12 +1,16 @@
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
+import { emailOTP } from 'better-auth/plugins';
 
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 
+import { EmailService } from '../../email/email.service';
+
 export const createAuth = (
   prisma: PrismaClient,
   configService: ConfigService,
+  emailService: EmailService,
 ) => {
   const isProduction = configService.get<string>('NODE_ENV') === 'production';
 
@@ -21,7 +25,11 @@ export const createAuth = (
 
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false,
+      requireEmailVerification: true,
+    },
+
+    emailVerification: {
+      autoSignInAfterVerification: true,
     },
 
     session: {
@@ -31,6 +39,28 @@ export const createAuth = (
         enabled: false,
       },
     },
+
+    plugins: [
+      emailOTP({
+        async sendVerificationOTP({ email, otp }) {
+          await emailService.sendMail({
+            to: email,
+            subject: 'Your verification code',
+            html: `
+              <h1>Email Verification</h1>
+              <p>Your verification code is:</p>
+              <h2 style="font-size: 32px; letter-spacing: 8px; text-align: center; background: #f4f4f4; padding: 20px; border-radius: 8px;">${otp}</h2>
+              <p>This code expires in 5 minutes.</p>
+              <p>If you did not request this code, please ignore this email.</p>
+            `,
+          });
+        },
+        sendVerificationOnSignUp: true,
+        overrideDefaultEmailVerification: true,
+        storeOTP: 'hashed',
+        allowedAttempts: 3,
+      }),
+    ],
 
     advanced: {
       useSecureCookies: isProduction,
