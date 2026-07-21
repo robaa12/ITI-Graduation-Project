@@ -4,6 +4,7 @@ import { toNodeHandler } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { EmailService } from '../email/email.service';
 import { Auth, createAuth } from './lib/auth';
 
 @Injectable()
@@ -14,8 +15,13 @@ export class AuthService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {
-    this.auth = createAuth(this.prismaService, this.configService);
+    this.auth = createAuth(
+      this.prismaService,
+      this.configService,
+      this.emailService,
+    );
     this.handler = toNodeHandler(this.auth);
   }
 
