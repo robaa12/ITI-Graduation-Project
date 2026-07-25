@@ -12,6 +12,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { EmailModule } from './modules/email/email.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { ContentModule } from './modules/content/content.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { CampaignsModule } from './modules/campaigns/campaigns.module';
     AuthModule,
     ProjectsModule,
     CampaignsModule,
+    ContentModule,
   ],
   controllers: [AppController],
   providers: [AppService],
