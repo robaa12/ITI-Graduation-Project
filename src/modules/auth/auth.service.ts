@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { toNodeHandler } from 'better-auth/node';
+import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import type { Request, Response } from 'express';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { Auth, createAuth } from './lib/auth';
+import type { AuthenticatedUser } from './auth.types';
 
 @Injectable()
 export class AuthService {
@@ -23,6 +24,22 @@ export class AuthService {
       this.emailService,
     );
     this.handler = toNodeHandler(this.auth);
+  }
+
+  /**
+   * Reads the Better Auth session attached to the incoming request.
+   * Returns null when the request carries no valid session.
+   */
+  async getSession(req: Request): Promise<{ user: AuthenticatedUser } | null> {
+    const session = await this.auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+    });
+
+    if (!session?.user) {
+      return null;
+    }
+
+    return { user: session.user };
   }
 
   async handle(
