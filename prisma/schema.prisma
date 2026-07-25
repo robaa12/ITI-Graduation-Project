@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -18,6 +17,7 @@ model User {
   updatedAt     DateTime  @updatedAt
   sessions      Session[]
   accounts      Account[]
+  projects      Project[]
 
   @@unique([email])
   @@map("user")
@@ -69,4 +69,90 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CampaignStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum GeneratedContentStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum ContentFormat {
+  TEXT
+  MARKDOWN
+  HTML
+  JSON
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  archivedAt  DateTime?
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaigns   Campaign[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([userId, status])
+  @@map("project")
+}
+
+model Campaign {
+  id          String             @id @default(uuid())
+  name        String
+  description String?
+  objective   String?
+  audience    String?
+  tone        String?
+  channels    String[]           @default([])
+  startDate   DateTime?
+  endDate     DateTime?
+  status      CampaignStatus     @default(DRAFT)
+  publishedAt DateTime?
+  projectId   String
+  project     Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contents    GeneratedContent[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@map("campaign")
+}
+
+model GeneratedContent {
+  id         String                 @id @default(uuid())
+  type       String
+  title      String?
+  body       String?
+  payload    Json?
+  format     ContentFormat          @default(TEXT)
+  status     GeneratedContentStatus @default(READY)
+  prompt     String?
+  model      String?
+  error      String?
+  version    Int                    @default(1)
+  isEdited   Boolean                @default(false)
+  campaignId String
+  campaign   Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+
+  @@index([campaignId])
+  @@index([campaignId, type])
+  @@map("generated_content")
 }
