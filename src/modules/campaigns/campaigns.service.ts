@@ -195,15 +195,33 @@ export class CampaignsService {
   ): { startDate: Date | null; endDate: Date | null } {
     const startDate =
       rawStart !== undefined
-        ? new Date(rawStart)
+        ? this.parseDate(rawStart, 'startDate')
         : (current?.startDate ?? null);
     const endDate =
-      rawEnd !== undefined ? new Date(rawEnd) : (current?.endDate ?? null);
+      rawEnd !== undefined
+        ? this.parseDate(rawEnd, 'endDate')
+        : (current?.endDate ?? null);
 
     if (startDate && endDate && endDate.getTime() < startDate.getTime()) {
       throw new BadRequestException('endDate must not be before startDate');
     }
 
     return { startDate, endDate };
+  }
+
+  /**
+   * Defence in depth behind `@IsDateString`. An unparseable string still gives
+   * back a Date object, but its getTime() is NaN — and every comparison with
+   * NaN is false, so the range check above would wave it through and Prisma
+   * would be handed an Invalid Date. Reject it here instead.
+   */
+  private parseDate(raw: string, field: 'startDate' | 'endDate'): Date {
+    const parsed = new Date(raw);
+
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(`${field} must be a valid ISO 8601 date`);
+    }
+
+    return parsed;
   }
 }
