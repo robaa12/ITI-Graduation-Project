@@ -1,36 +1,33 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import {
-  ContentFormat,
   GeneratedContent,
   GeneratedContentStatus,
   Prisma,
 } from '@prisma/client';
+import { Queue } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { ContentExportService, ExportedFile } from './content-export.service';
+import {
+  CONTENT_GENERATION_QUEUE,
+  ContentGenerationJob,
+} from './content-generation.queue';
 import { ExportFormat } from './dto/export-content.dto';
 import { GenerateContentDto } from './dto/generate-content.dto';
 import { QueryContentDto } from './dto/query-content.dto';
 import { RegenerateContentDto } from './dto/regenerate-content.dto';
 import { UpdateContentDto } from './dto/update-content.dto';
-import { CONTENT_GENERATOR } from './generator/content-generator.port';
-import type {
-  ContentGenerationBrief,
-  ContentGeneratorPort,
-  GeneratedContentDraft,
-} from './generator/content-generator.port';
 
 @Injectable()
 export class ContentService {
-  private readonly logger = new Logger(ContentService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly campaignsService: CampaignsService,
     private readonly exportService: ContentExportService,
-    @Inject(CONTENT_GENERATOR)
-    private readonly generator: ContentGeneratorPort,
+    @InjectQueue(CONTENT_GENERATION_QUEUE)
+    private readonly queue: Queue<ContentGenerationJob>,
   ) {}
 
   /** Exports every generated output of a campaign as one downloadable file. */
@@ -67,9 +64,9 @@ export class ContentService {
   }
 
   /**
-   * Asks the generation agent for a new output and stores it. A failing agent
-   * is recorded as a FAILED row rather than losing the request, so the client
-   * can show the error and retry with `regenerate`.
+   * Queues a generation and returns the PENDING row immediately. The agent
+   * never runs on the request thread, so a client disconnect cannot abandon it
+   * — clients poll `findOne` (or list by status) until it turns READY/FAILED.
    */
   async generate(
     userId: string,
@@ -77,8 +74,6 @@ export class ContentService {
     dto: GenerateContentDto,
   ): Promise<GeneratedContent> {
     await this.campaignsService.findOwnedOrFail(userId, campaignId);
-
-    const brief = await this.buildBrief(campaignId, dto.type, dto.instructions);
 
     const record = await this.prisma.generatedContent.create({
       data: {
@@ -89,7 +84,9 @@ export class ContentService {
       },
     });
 
-    return this.runGeneration(record.id, brief, record.version);
+    await this.enqueue(record.id, record.version, false);
+
+    return record;
   }
 
   async findAll(userId: string, campaignId: string, query: QueryContentDto) {
@@ -149,8 +146,9 @@ export class ContentService {
   }
 
   /**
-   * Re-runs the agent for an existing row, bumping its version. Manual edits
-   * are overwritten, which is what "regenerate" means to the user.
+   * Queues a re-run for an existing row, bumping its version on success. Manual
+   * edits are overwritten, which is what "regenerate" means to the user. Like
+   * {@link generate} this only enqueues and returns the PENDING row.
    */
   async regenerate(
     userId: string,
@@ -160,20 +158,7 @@ export class ContentService {
     const existing = await this.findOwnedOrFail(userId, id);
     const instructions = dto.instructions ?? existing.prompt ?? undefined;
 
-    const brief = await this.buildBrief(
-      existing.campaignId,
-      existing.type,
-      instructions,
-      dto.usePrevious === false
-        ? null
-        : {
-            title: existing.title,
-            body: existing.body,
-            payload: existing.payload,
-          },
-    );
-
-    await this.prisma.generatedContent.update({
+    const record = await this.prisma.generatedContent.update({
       where: { id },
       data: {
         status: GeneratedContentStatus.PENDING,
@@ -182,7 +167,9 @@ export class ContentService {
       },
     });
 
-    return this.runGeneration(id, brief, existing.version + 1);
+    await this.enqueue(id, existing.version + 1, dto.usePrevious !== false);
+
+    return record;
   }
 
   async remove(userId: string, id: string): Promise<void> {
@@ -204,88 +191,30 @@ export class ContentService {
     return content;
   }
 
-  /** Loads everything the agent needs about the campaign and its project. */
-  private async buildBrief(
-    campaignId: string,
-    type: string,
-    instructions?: string,
-    previous?: ContentGenerationBrief['previous'],
-  ): Promise<ContentGenerationBrief> {
-    const campaign = await this.prisma.campaign.findUnique({
-      where: { id: campaignId },
-      include: { project: true },
-    });
-
-    if (!campaign) {
-      throw new NotFoundException(`Campaign ${campaignId} not found`);
-    }
-
-    return {
-      project: {
-        id: campaign.project.id,
-        name: campaign.project.name,
-        description: campaign.project.description,
-      },
-      campaign: {
-        id: campaign.id,
-        name: campaign.name,
-        description: campaign.description,
-        objective: campaign.objective,
-        audience: campaign.audience,
-        tone: campaign.tone,
-        channels: campaign.channels,
-        startDate: campaign.startDate,
-        endDate: campaign.endDate,
-      },
-      type,
-      instructions,
-      previous,
-    };
-  }
-
-  private async runGeneration(
-    id: string,
-    brief: ContentGenerationBrief,
+  /**
+   * `jobId` keys the job to the exact row+version it produces, so a double
+   * submit is dropped by the queue instead of paying for the agent twice.
+   * Failed jobs are removed once their retries are exhausted, which is what
+   * frees that key again for a genuine user-initiated retry.
+   *
+   * The separator is `-v` rather than `:` because BullMQ rejects colons in
+   * custom job ids (they collide with its own Redis key namespacing).
+   */
+  private async enqueue(
+    contentId: string,
     version: number,
-  ): Promise<GeneratedContent> {
-    try {
-      const draft = await this.generator.generate(brief);
-
-      return await this.prisma.generatedContent.update({
-        where: { id },
-        data: {
-          type: draft.type || brief.type,
-          title: draft.title ?? null,
-          body: draft.body ?? null,
-          payload: this.toJsonInput(draft),
-          format: draft.format ?? ContentFormat.TEXT,
-          model: draft.model ?? null,
-          status: GeneratedContentStatus.READY,
-          error: null,
-          version,
-          isEdited: false,
-        },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      this.logger.error(
-        `Generation failed for content ${id}: ${message}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-
-      return this.prisma.generatedContent.update({
-        where: { id },
-        data: { status: GeneratedContentStatus.FAILED, error: message },
-      });
-    }
-  }
-
-  private toJsonInput(
-    draft: GeneratedContentDraft,
-  ): Prisma.InputJsonValue | typeof Prisma.DbNull {
-    return draft.payload === undefined || draft.payload === null
-      ? Prisma.DbNull
-      : draft.payload;
+    usePrevious: boolean,
+  ): Promise<void> {
+    await this.queue.add(
+      'generate',
+      { contentId, version, usePrevious },
+      {
+        jobId: `${contentId}-v${version}`,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2_000 },
+        removeOnComplete: { count: 100 },
+        removeOnFail: true,
+      },
+    );
   }
 }

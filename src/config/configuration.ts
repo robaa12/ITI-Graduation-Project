@@ -13,6 +13,13 @@ export default () => ({
     url: process.env.DATABASE_URL,
   },
 
+  /** Backing store for the BullMQ generation queue. */
+  redis: {
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT ?? 6379),
+    password: process.env.REDIS_PASSWORD,
+  },
+
   auth: {
     secret: process.env.BETTER_AUTH_SECRET,
     url: process.env.BETTER_AUTH_URL,
