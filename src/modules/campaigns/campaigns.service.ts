@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Campaign, CampaignStatus, Prisma } from '@prisma/client';
 
+import { hasAnyValue } from '../../common/has-any-value';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
@@ -267,14 +268,4 @@ export class CampaignsService {
 
     return parsed;
   }
-}
-
-/**
- * True when the DTO carries anything worth writing. Every field is optional, so
- * an empty body still arrives as a valid instance — and class-transformer keeps
- * unset properties as `undefined` keys, which is why the values are checked
- * rather than the key count.
- */
-function hasAnyValue(dto: object): boolean {
-  return Object.values(dto).some((value) => value !== undefined);
 }
