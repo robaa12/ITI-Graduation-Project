@@ -106,12 +106,23 @@ export class CampaignsService {
   /**
    * Saves edits and moves the campaign back to draft. Used by the editor's
    * "Save draft" action, which must never leave a campaign published.
+   *
+   * Un-publishing here is a side effect of saving, so it needs something to
+   * save: an empty body is rejected rather than quietly un-publishing a live
+   * campaign. Use {@link unpublish} to change the status on its own.
    */
   async saveDraft(
     userId: string,
     id: string,
     dto: UpdateCampaignDto,
   ): Promise<Campaign> {
+    if (!hasAnyValue(dto)) {
+      throw new BadRequestException(
+        'Provide at least one field to save. To only take the campaign ' +
+          'offline, use POST /campaigns/:id/unpublish.',
+      );
+    }
+
     const campaign = await this.findOwnedOrFail(userId, id);
 
     return this.prisma.campaign.update({
@@ -134,6 +145,24 @@ export class CampaignsService {
     return this.prisma.campaign.update({
       where: { id },
       data: { status: CampaignStatus.PUBLISHED, publishedAt: new Date() },
+    });
+  }
+
+  /**
+   * Takes a published campaign offline without touching its content. The
+   * explicit counterpart to {@link publish}, so un-publishing is always
+   * something the caller asked for by name.
+   */
+  async unpublish(userId: string, id: string): Promise<Campaign> {
+    const campaign = await this.findOwnedOrFail(userId, id);
+
+    if (campaign.status === CampaignStatus.DRAFT) {
+      throw new ConflictException('Campaign is not published');
+    }
+
+    return this.prisma.campaign.update({
+      where: { id },
+      data: { status: CampaignStatus.DRAFT, publishedAt: null },
     });
   }
 
@@ -224,4 +253,14 @@ export class CampaignsService {
 
     return parsed;
   }
+}
+
+/**
+ * True when the DTO carries anything worth writing. Every field is optional, so
+ * an empty body still arrives as a valid instance — and class-transformer keeps
+ * unset properties as `undefined` keys, which is why the values are checked
+ * rather than the key count.
+ */
+function hasAnyValue(dto: object): boolean {
+  return Object.values(dto).some((value) => value !== undefined);
 }
