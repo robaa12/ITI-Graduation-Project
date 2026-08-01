@@ -8,6 +8,7 @@ import { Prisma, Project, ProjectStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { DuplicateProjectDto } from './dto/duplicate-project.dto';
+import { FindProjectDto } from './dto/find-project.dto';
 import { QueryProjectsDto } from './dto/query-projects.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
@@ -58,22 +59,43 @@ export class ProjectsService {
     };
   }
 
-  async findOne(userId: string, id: string) {
+  /**
+   * Project detail with its campaigns. The nested list is paginated so a
+   * project with many campaigns never loads them all in one response.
+   */
+  async findOne(userId: string, id: string, query: FindProjectDto) {
     const project = await this.prisma.project.findFirst({
       where: { id, userId },
-      include: {
-        campaigns: {
-          orderBy: { updatedAt: 'desc' },
-          include: { _count: { select: { contents: true } } },
-        },
-      },
+      include: { _count: { select: { campaigns: true } } },
     });
 
     if (!project) {
       throw new NotFoundException(`Project ${id} not found`);
     }
 
-    return project;
+    const campaigns = await this.prisma.campaign.findMany({
+      where: { projectId: id },
+      orderBy: { updatedAt: 'desc' },
+      skip: (query.campaignsPage - 1) * query.campaignsLimit,
+      take: query.campaignsLimit,
+      include: { _count: { select: { contents: true } } },
+    });
+
+    const { _count, ...rest } = project;
+    const total = _count.campaigns;
+
+    return {
+      ...rest,
+      campaigns: {
+        items: campaigns,
+        meta: {
+          total,
+          page: query.campaignsPage,
+          limit: query.campaignsLimit,
+          totalPages: Math.ceil(total / query.campaignsLimit),
+        },
+      },
+    };
   }
 
   async update(

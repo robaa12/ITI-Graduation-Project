@@ -17,6 +17,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { DuplicateProjectDto } from './dto/duplicate-project.dto';
+import { FindProjectDto } from './dto/find-project.dto';
 import { QueryProjectsDto } from './dto/query-projects.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { ProjectsService } from './projects.service';
@@ -47,8 +48,9 @@ export class ProjectsController {
   findOne(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: FindProjectDto,
   ) {
-    return this.projectsService.findOne(user.id, id);
+    return this.projectsService.findOne(user.id, id, query);
   }
 
   @Patch(':id')
