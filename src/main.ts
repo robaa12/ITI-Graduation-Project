@@ -1,9 +1,21 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+
+/**
+ * Stated explicitly rather than inherited from body-parser's 100kb default:
+ * per-field caps in the DTOs only run *after* the body is parsed into memory,
+ * so this is the limit that decides how much a single request can cost us.
+ * Large enough for the biggest valid content update, and no larger.
+ */
+const MAX_REQUEST_BODY = '256kb';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  app.use(json({ limit: MAX_REQUEST_BODY }));
+  app.use(urlencoded({ extended: true, limit: MAX_REQUEST_BODY }));
 
   app.useGlobalPipes(
     new ValidationPipe({
