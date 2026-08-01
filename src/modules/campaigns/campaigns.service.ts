@@ -90,12 +90,26 @@ export class CampaignsService {
     });
   }
 
+  /**
+   * Edits a draft in place. Published campaigns are rejected: editing one
+   * would leave `publishedAt` pointing at a version of the campaign that no
+   * longer exists, so anything reading that field for freshness would be
+   * wrong. Going back through draft is the only way to change a live campaign.
+   */
   async update(
     userId: string,
     id: string,
     dto: UpdateCampaignDto,
   ): Promise<Campaign> {
     const campaign = await this.findOwnedOrFail(userId, id);
+
+    if (campaign.status === CampaignStatus.PUBLISHED) {
+      throw new ConflictException(
+        'A published campaign cannot be edited in place. Save the changes ' +
+          'with PUT /campaigns/:id/draft, or take it offline first with ' +
+          'POST /campaigns/:id/unpublish.',
+      );
+    }
 
     return this.prisma.campaign.update({
       where: { id },

@@ -60,6 +60,7 @@ export class CampaignsController {
     return this.campaignsService.findOne(user.id, id);
   }
 
+  /** Drafts only — see the service for why a published campaign 409s here. */
   @Patch(':id')
   update(
     @CurrentUser() user: AuthenticatedUser,
