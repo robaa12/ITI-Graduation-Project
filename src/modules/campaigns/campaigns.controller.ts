@@ -69,7 +69,11 @@ export class CampaignsController {
     return this.campaignsService.update(user.id, id, dto);
   }
 
-  /** Save draft: persists edits and forces the campaign back to DRAFT. */
+  /**
+   * Save draft: persists edits and forces the campaign back to DRAFT. Needs at
+   * least one field — un-publishing on its own is `POST :id/unpublish`, so a
+   * stray empty request can never take a live campaign offline.
+   */
   @Put(':id/draft')
   @HttpCode(200)
   saveDraft(
@@ -87,6 +91,15 @@ export class CampaignsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.campaignsService.publish(user.id, id);
+  }
+
+  @Post(':id/unpublish')
+  @HttpCode(200)
+  unpublish(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.campaignsService.unpublish(user.id, id);
   }
 
   @Delete(':id')
