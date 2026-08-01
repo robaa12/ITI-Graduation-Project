@@ -39,8 +39,10 @@ function sendFile(res: Response, file: ExportedFile): void {
 export class CampaignContentController {
   constructor(private readonly contentService: ContentService) {}
 
+  // 202: the row is created PENDING and the agent runs on the queue, so the
+  // client has to poll GET /contents/:id until it is READY or FAILED.
   @Post('generate')
-  @HttpCode(201)
+  @HttpCode(202)
   generate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
@@ -97,8 +99,9 @@ export class ContentController {
     return this.contentService.update(user.id, id, dto);
   }
 
+  /** Enqueues a re-run; same polling contract as generate. */
   @Post(':id/regenerate')
-  @HttpCode(200)
+  @HttpCode(202)
   regenerate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', ParseUUIDPipe) id: string,

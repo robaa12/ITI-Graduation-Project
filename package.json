@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@better-auth/prisma-adapter": "^1.6.23",
+    "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
@@ -28,6 +29,7 @@
     "@nestjs/typeorm": "^11.0.3",
     "@prisma/client": "^6.19.3",
     "better-auth": "^1.6.23",
+    "bullmq": "^5.81.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "joi": "^18.2.3",

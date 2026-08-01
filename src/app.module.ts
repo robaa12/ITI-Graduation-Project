@@ -1,6 +1,7 @@
+import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import configuration from './config/configuration';
 import { validationSchema } from './config/env.validation';
 
@@ -37,6 +38,16 @@ import { ContentModule } from './modules/content/content.module';
     //     synchronize: configService.get('NODE_ENV') !== 'production',
     //   }),
     // }),
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.getOrThrow<string>('redis.host'),
+          port: configService.getOrThrow<number>('redis.port'),
+          password: configService.get<string>('redis.password'),
+        },
+      }),
+    }),
     PrismaModule,
     EmailModule,
     AuthModule,
