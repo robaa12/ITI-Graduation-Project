@@ -3,7 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Project, ProjectStatus } from '@prisma/client';
+import {
+  GeneratedContentStatus,
+  Prisma,
+  Project,
+  ProjectStatus,
+} from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -151,13 +156,21 @@ export class ProjectsService {
 
   /**
    * Deep-copies a project with all of its campaigns. Copied campaigns always
-   * start as drafts so the duplicate never re-publishes anything by itself.
+   * start as drafts so the duplicate never re-publishes anything by itself,
+   * and only settled content comes along — see the `contents` filter below.
    */
   async duplicate(userId: string, id: string, dto: DuplicateProjectDto) {
     const source = await this.prisma.project.findFirst({
       where: { id, userId },
       include: {
-        campaigns: { include: { contents: true } },
+        campaigns: {
+          include: {
+            // A PENDING row's job belongs to the original row and will never
+            // write to the copy, so copying one strands it PENDING forever; a
+            // FAILED row is an error record, not content worth carrying over.
+            contents: { where: { status: GeneratedContentStatus.READY } },
+          },
+        },
       },
     });
 
@@ -189,10 +202,18 @@ export class ProjectsService {
                       body: content.body,
                       payload: content.payload ?? Prisma.DbNull,
                       format: content.format,
-                      status: content.status,
                       prompt: content.prompt,
                       model: content.model,
-                      version: content.version,
+                      // `status` and `error` are left at their defaults: only
+                      // READY rows reach here, so the copy is READY with no
+                      // error, and `version` restarts at 1 because the copy
+                      // has been regenerated zero times of its own.
+                      //
+                      // `isEdited` is carried over on purpose — it describes
+                      // the text, and the text still contains those human
+                      // edits. Resetting it would claim the copy is untouched
+                      // agent output and let a regenerate silently discard
+                      // work the flag exists to protect.
                       isEdited: content.isEdited,
                     })),
                   },
