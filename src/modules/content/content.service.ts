@@ -1,5 +1,9 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   GeneratedContent,
   GeneratedContentStatus,
@@ -7,6 +11,7 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 
+import { hasAnyValue } from '../../common/has-any-value';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { ContentExportService, ExportedFile } from './content-export.service';
@@ -123,12 +128,22 @@ export class ContentService {
     return this.findOwnedOrFail(userId, id);
   }
 
-  /** Manual edit of an agent output. Flags the row so it is not silently lost. */
+  /**
+   * Manual edit of an agent output. Flags the row so it is not silently lost.
+   *
+   * An empty body is rejected rather than treated as an edit: `isEdited` is the
+   * flag that stops `regenerate` from overwriting human work, so setting it for
+   * a request that changed nothing would protect content nobody ever touched.
+   */
   async update(
     userId: string,
     id: string,
     dto: UpdateContentDto,
   ): Promise<GeneratedContent> {
+    if (!hasAnyValue(dto)) {
+      throw new BadRequestException('Provide at least one field to update');
+    }
+
     await this.findOwnedOrFail(userId, id);
 
     return this.prisma.generatedContent.update({
