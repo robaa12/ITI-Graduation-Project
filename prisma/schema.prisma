@@ -135,22 +135,32 @@ model Campaign {
 }
 
 model GeneratedContent {
-  id         String                 @id @default(uuid())
-  type       String
-  title      String?
-  body       String?
-  payload    Json?
-  format     ContentFormat          @default(TEXT)
-  status     GeneratedContentStatus @default(READY)
-  prompt     String?
-  model      String?
-  error      String?
-  version    Int                    @default(1)
-  isEdited   Boolean                @default(false)
+  id      String                 @id @default(uuid())
+  type    String
+  title   String?
+  body    String?
+  payload Json?
+  format  ContentFormat          @default(TEXT)
+  status  GeneratedContentStatus @default(READY)
+  prompt  String?
+  model   String?
+  error   String?
+
+  /// Successful generations of this row. User-facing: bumped only when the
+  /// agent actually produces something, never by a request or a failure.
+  version Int @default(1)
+
+  /// Bumped by anything that supersedes an in-flight generation: a new
+  /// regenerate, or a manual edit. A worker writes its result only while this
+  /// still matches the value its job was queued with, so a slow job can never
+  /// overwrite newer data. Not user-facing.
+  generationRevision Int @default(0)
+
+  isEdited   Boolean  @default(false)
   campaignId String
-  campaign   Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  createdAt  DateTime               @default(now())
-  updatedAt  DateTime               @updatedAt
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@index([campaignId])
   @@index([campaignId, type])

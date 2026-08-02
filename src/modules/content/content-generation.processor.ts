@@ -45,7 +45,7 @@ export class ContentGenerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<ContentGenerationJob>): Promise<void> {
-    const { contentId, version, usePrevious } = job.data;
+    const { contentId, revision, usePrevious } = job.data;
 
     const content = await this.prisma.generatedContent.findUnique({
       where: { id: contentId },
@@ -61,14 +61,29 @@ export class ContentGenerationProcessor extends WorkerHost {
       return;
     }
 
+    // Cheap pre-check: skip the agent call entirely when the job was already
+    // superseded before it even started. The write below is still guarded,
+    // because the row can also move while the agent is running.
+    if (content.generationRevision !== revision) {
+      this.logger.log(
+        `Skipping superseded generation for content ${contentId} ` +
+          `(job revision ${revision}, row at ${content.generationRevision})`,
+      );
+      return;
+    }
+
     // Thrown errors propagate on purpose: BullMQ retries them, and the row is
     // only marked FAILED once the attempts are used up (see onFailed).
     const draft = await this.generator.generate(
       this.buildBrief(content, usePrevious),
     );
 
-    await this.prisma.generatedContent.update({
-      where: { id: contentId },
+    // Conditional on the revision, so a job that lost the race to a newer
+    // regenerate or a manual edit writes nothing at all rather than reverting
+    // the newer content and clearing isEdited. `version` is incremented here
+    // and only here: it counts outputs the agent actually delivered.
+    const { count } = await this.prisma.generatedContent.updateMany({
+      where: { id: contentId, generationRevision: revision },
       data: {
         type: draft.type || content.type,
         title: draft.title ?? null,
@@ -78,10 +93,17 @@ export class ContentGenerationProcessor extends WorkerHost {
         model: draft.model ?? null,
         status: GeneratedContentStatus.READY,
         error: null,
-        version,
+        version: { increment: 1 },
         isEdited: false,
       },
     });
+
+    if (count === 0) {
+      this.logger.log(
+        `Discarded stale generation result for content ${contentId} ` +
+          `(job revision ${revision} was superseded while the agent ran)`,
+      );
+    }
   }
 
   /**
@@ -100,9 +122,10 @@ export class ContentGenerationProcessor extends WorkerHost {
 
     const attempts = job.opts.attempts ?? 1;
     const message = error?.message ?? String(error);
+    const { contentId, revision } = job.data;
 
     this.logger.error(
-      `Generation attempt ${job.attemptsMade}/${attempts} failed for content ${job.data.contentId}: ${message}`,
+      `Generation attempt ${job.attemptsMade}/${attempts} failed for content ${contentId}: ${message}`,
       error?.stack,
     );
 
@@ -111,16 +134,23 @@ export class ContentGenerationProcessor extends WorkerHost {
     }
 
     try {
-      await this.prisma.generatedContent.update({
-        where: { id: job.data.contentId },
+      // Guarded like the success path: a failure that belongs to a superseded
+      // job must not stamp FAILED over content a newer run or edit produced.
+      // The row may also be gone, which updateMany reports as 0 rather than
+      // throwing.
+      const { count } = await this.prisma.generatedContent.updateMany({
+        where: { id: contentId, generationRevision: revision },
         data: { status: GeneratedContentStatus.FAILED, error: message },
       });
+
+      if (count === 0) {
+        this.logger.log(
+          `Not recording failure for content ${contentId}: job revision ` +
+            `${revision} is superseded or the row is gone`,
+        );
+      }
     } catch {
-      // The row may have been deleted in the meantime; the job is already
-      // failed and there is nothing left to record against.
-      this.logger.warn(
-        `Could not mark content ${job.data.contentId} as FAILED`,
-      );
+      this.logger.warn(`Could not mark content ${contentId} as FAILED`);
     }
   }
 
