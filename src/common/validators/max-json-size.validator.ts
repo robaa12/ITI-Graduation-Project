@@ -11,7 +11,7 @@ import {
  * BigInt) is treated as oversized — it has no valid size, and it would blow up
  * later in Prisma anyway.
  */
-function jsonByteLength(value: unknown): number {
+export function jsonByteLength(value: unknown): number {
   let serialised: string | undefined;
 
   try {
