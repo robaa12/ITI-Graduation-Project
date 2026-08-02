@@ -4,8 +4,13 @@
 
 ```bash
 npm install
-cp .env .env.local
+cp .env.example .env
 ```
+
+Fill in the SMTP settings with a real provider before testing email delivery.
+The example's local values are sufficient for application startup, but its SMTP
+endpoint does not deliver mail. Replace `BETTER_AUTH_SECRET` with a unique,
+high-entropy secret in every non-local environment.
 
 ## Development
 
