@@ -20,5 +20,14 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false
-  }
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // Separate ESM/Node 22 workspace with its own toolchain and its own
+    // tsconfig. It is reached over HTTP, never imported, so compiling it here
+    // only produces errors for dependencies this project does not install.
+    "marketing-workflow-demo"
+  ]
 }
