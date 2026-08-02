@@ -7,4 +7,12 @@ export const CONTENT_WORKFLOW_QUEUE = 'content-workflow';
  */
 export interface ContentWorkflowJob {
   contentRunId: string;
+  /**
+   * Present only on a resume. Not persisted on the row: it is a one-off answer
+   * to a specific suspension, not state the run is defined by.
+   */
+  resume?: {
+    step?: string | string[];
+    resumeData: unknown;
+  };
 }

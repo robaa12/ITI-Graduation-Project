@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
+
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -14,6 +17,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
+import { parseResumeRequest } from '../mastra/resume-request';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
 import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
 
@@ -113,6 +117,70 @@ export class StrategyService {
     );
 
     return withRun;
+  }
+
+  /**
+   * Resumes a suspended run.
+   *
+   * The claim is a conditional update on SUSPENDED, so two clients answering
+   * the same suspension race in the database and exactly one wins — the loser
+   * gets a 409 instead of queueing a second resume for a run already moving.
+   */
+  async resume(
+    userId: string,
+    id: string,
+    body: unknown,
+  ): Promise<MarketingStrategy> {
+    const strategy = await this.findOwnedOrFail(userId, id);
+    const resume = parseResumeRequest(body);
+
+    if (!strategy.runId) {
+      throw new ConflictException(`Strategy ${id} has no Mastra run to resume`);
+    }
+
+    const { count } = await this.prisma.marketingStrategy.updateMany({
+      where: { id, status: WorkflowRunStatus.SUSPENDED },
+      data: {
+        status: WorkflowRunStatus.PENDING,
+        suspendPayload: Prisma.DbNull,
+        error: null,
+      },
+    });
+
+    if (count === 0) {
+      throw new ConflictException(
+        `Strategy ${id} is ${strategy.status}; only a SUSPENDED run can be resumed`,
+      );
+    }
+
+    try {
+      await this.queue.add(
+        'resume',
+        { strategyId: id, resume },
+        {
+          // A run can suspend and resume repeatedly, so the id has to be unique
+          // per attempt. Double submits are already excluded by the conditional
+          // claim above, which is the guard that actually matters here.
+          jobId: `strategy-${id}-resume-${randomUUID()}`,
+          attempts: 1,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      );
+    } catch (error) {
+      // The claim already moved the row off SUSPENDED. If the job never made it
+      // onto the queue, put it back so the suspension stays answerable.
+      await this.prisma.marketingStrategy.updateMany({
+        where: { id, status: WorkflowRunStatus.PENDING },
+        data: {
+          status: WorkflowRunStatus.SUSPENDED,
+          suspendPayload: strategy.suspendPayload ?? Prisma.DbNull,
+        },
+      });
+      throw error;
+    }
+
+    return this.findOwnedOrFail(userId, id);
   }
 
   async findAll(userId: string, campaignId: string, query: QueryStrategyDto) {

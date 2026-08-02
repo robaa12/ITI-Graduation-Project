@@ -7,4 +7,13 @@ export const STRATEGY_QUEUE = 'marketing-strategy';
  */
 export interface StrategyJob {
   strategyId: string;
+  /**
+   * Present only on a resume. Unlike the run input this is not persisted on the
+   * row: it is a one-off answer to a specific suspension, not state the run is
+   * defined by.
+   */
+  resume?: {
+    step?: string | string[];
+    resumeData: unknown;
+  };
 }

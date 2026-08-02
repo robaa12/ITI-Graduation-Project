@@ -50,11 +50,20 @@ export class StrategyProcessor extends WorkerHost {
       data: { status: WorkflowRunStatus.RUNNING },
     });
 
-    const result = await this.mastra.startRun(
-      MASTRA_WORKFLOWS.strategy,
-      strategy.runId,
-      strategy.input,
-    );
+    const { resume } = job.data;
+
+    const result = resume
+      ? await this.mastra.resumeRun(
+          MASTRA_WORKFLOWS.strategy,
+          strategy.runId,
+          resume.step,
+          resume.resumeData,
+        )
+      : await this.mastra.startRun(
+          MASTRA_WORKFLOWS.strategy,
+          strategy.runId,
+          strategy.input,
+        );
 
     const status = toWorkflowRunStatus(result);
 

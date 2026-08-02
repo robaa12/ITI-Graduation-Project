@@ -65,4 +65,18 @@ export class ContentRunController {
   ) {
     return this.service.findOne(user.id, id);
   }
+
+  /**
+   * Approves or answers a suspension raised by `requireApproval`, putting the
+   * run back on the queue. Body: `{ step?, resumeData }`.
+   */
+  @Post(':id/resume')
+  @HttpCode(202)
+  resume(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.service.resume(user.id, id, body);
+  }
 }

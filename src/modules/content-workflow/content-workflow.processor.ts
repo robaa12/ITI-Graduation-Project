@@ -51,11 +51,20 @@ export class ContentWorkflowProcessor extends WorkerHost {
       data: { status: WorkflowRunStatus.RUNNING },
     });
 
-    const result = await this.mastra.startRun(
-      MASTRA_WORKFLOWS.content,
-      run.runId,
-      run.input,
-    );
+    const { resume } = job.data;
+
+    const result = resume
+      ? await this.mastra.resumeRun(
+          MASTRA_WORKFLOWS.content,
+          run.runId,
+          resume.step,
+          resume.resumeData,
+        )
+      : await this.mastra.startRun(
+          MASTRA_WORKFLOWS.content,
+          run.runId,
+          run.input,
+        );
 
     const status = toWorkflowRunStatus(result);
 
