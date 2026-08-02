@@ -15,6 +15,7 @@ import { ProjectsModule } from './modules/projects/projects.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { ContentModule } from './modules/content/content.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
+import { ContentWorkflowModule } from './modules/content-workflow/content-workflow.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { StrategyModule } from './modules/strategy/strategy.module';
     CampaignsModule,
     ContentModule,
     StrategyModule,
+    ContentWorkflowModule,
   ],
   controllers: [AppController],
   providers: [AppService],
