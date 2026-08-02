@@ -86,10 +86,14 @@ export class ContentService {
         type: dto.type,
         prompt: dto.instructions,
         status: GeneratedContentStatus.PENDING,
+        // No successful generation yet; the worker bumps this to 1 when the
+        // agent delivers, so `version` always counts real outputs.
+        version: 0,
+        generationRevision: 1,
       },
     });
 
-    await this.enqueue(record.id, record.version, false);
+    await this.enqueue(record.id, record.generationRevision, false);
 
     return record;
   }
@@ -134,6 +138,14 @@ export class ContentService {
    * An empty body is rejected rather than treated as an edit: `isEdited` is the
    * flag that stops `regenerate` from overwriting human work, so setting it for
    * a request that changed nothing would protect content nobody ever touched.
+   *
+   * Bumping the revision makes the edit win over any generation already in
+   * flight. Without it a job that started before the edit would finish after
+   * it, replace the text and clear `isEdited` — losing the edit silently.
+   *
+   * Superseding that job also means nothing is left to settle the row, so the
+   * edit closes it out itself: hand-written content is READY by definition,
+   * and a row that was PENDING or FAILED must not be stranded there.
    */
   async update(
     userId: string,
@@ -156,6 +168,9 @@ export class ContentService {
           ? { payload: dto.payload as Prisma.InputJsonValue }
           : {}),
         isEdited: true,
+        generationRevision: { increment: 1 },
+        status: GeneratedContentStatus.READY,
+        error: null,
       },
     });
   }
@@ -164,6 +179,11 @@ export class ContentService {
    * Queues a re-run for an existing row, bumping its version on success. Manual
    * edits are overwritten, which is what "regenerate" means to the user. Like
    * {@link generate} this only enqueues and returns the PENDING row.
+   *
+   * The revision is reserved in the same statement that flips the row to
+   * PENDING, so two concurrent requests come away with different numbers and
+   * therefore different jobs. Reading it first and incrementing in JS would let
+   * both land on the same value, and the queue would silently drop one of them.
    */
   async regenerate(
     userId: string,
@@ -179,10 +199,15 @@ export class ContentService {
         status: GeneratedContentStatus.PENDING,
         prompt: instructions,
         error: null,
+        generationRevision: { increment: 1 },
       },
     });
 
-    await this.enqueue(id, existing.version + 1, dto.usePrevious !== false);
+    await this.enqueue(
+      id,
+      record.generationRevision,
+      dto.usePrevious !== false,
+    );
 
     return record;
   }
@@ -207,28 +232,28 @@ export class ContentService {
   }
 
   /**
-   * `jobId` keys the job to the exact row+version it produces, so a double
-   * submit is dropped by the queue instead of paying for the agent twice.
-   * Failed jobs are removed once their retries are exhausted, which is what
-   * frees that key again for a genuine user-initiated retry.
+   * `jobId` is keyed to the reserved revision, which the database hands out one
+   * at a time. Every accepted request therefore gets its own job — the id is an
+   * idempotency key for retries of the *same* reservation, never a reason to
+   * drop a distinct request.
    *
-   * The separator is `-v` rather than `:` because BullMQ rejects colons in
+   * The separator is `-r` rather than `:` because BullMQ rejects colons in
    * custom job ids (they collide with its own Redis key namespacing).
    */
   private async enqueue(
     contentId: string,
-    version: number,
+    revision: number,
     usePrevious: boolean,
   ): Promise<void> {
     await this.queue.add(
       'generate',
-      { contentId, version, usePrevious },
+      { contentId, revision, usePrevious },
       {
-        jobId: `${contentId}-v${version}`,
+        jobId: `${contentId}-r${revision}`,
         attempts: 3,
         backoff: { type: 'exponential', delay: 2_000 },
         removeOnComplete: { count: 100 },
-        removeOnFail: true,
+        removeOnFail: { count: 500 },
       },
     );
   }
