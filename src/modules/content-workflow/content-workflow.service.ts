@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
@@ -15,6 +17,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
+import { parseResumeRequest } from '../mastra/resume-request';
 import { StrategyService } from '../strategy/strategy.service';
 import {
   CONTENT_WORKFLOW_QUEUE,
@@ -158,6 +161,69 @@ export class ContentWorkflowService {
       strategyId: rawId,
       input: { ...rest, campaignStrategy },
     };
+  }
+
+  /**
+   * Answers a suspension — the content workflow pauses here when it was started
+   * with `requireApproval`. The claim is a conditional update on SUSPENDED, so
+   * two reviewers approving at once race in the database and only one wins.
+   */
+  async resume(
+    userId: string,
+    id: string,
+    body: unknown,
+  ): Promise<CampaignContentRun> {
+    const run = await this.findOwnedOrFail(userId, id);
+    const resume = parseResumeRequest(body);
+
+    if (!run.runId) {
+      throw new ConflictException(
+        `Content run ${id} has no Mastra run to resume`,
+      );
+    }
+
+    const { count } = await this.prisma.campaignContentRun.updateMany({
+      where: { id, status: WorkflowRunStatus.SUSPENDED },
+      data: {
+        status: WorkflowRunStatus.PENDING,
+        suspendPayload: Prisma.DbNull,
+        error: null,
+      },
+    });
+
+    if (count === 0) {
+      throw new ConflictException(
+        `Content run ${id} is ${run.status}; only a SUSPENDED run can be resumed`,
+      );
+    }
+
+    try {
+      await this.queue.add(
+        'resume',
+        { contentRunId: id, resume },
+        {
+          // Unique per attempt: a run can suspend and resume more than once.
+          // The conditional claim above is what excludes double submits.
+          jobId: `content-run-${id}-resume-${randomUUID()}`,
+          attempts: 1,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      );
+    } catch (error) {
+      // The claim already moved the row off SUSPENDED; restore it so the
+      // suspension stays answerable.
+      await this.prisma.campaignContentRun.updateMany({
+        where: { id, status: WorkflowRunStatus.PENDING },
+        data: {
+          status: WorkflowRunStatus.SUSPENDED,
+          suspendPayload: run.suspendPayload ?? Prisma.DbNull,
+        },
+      });
+      throw error;
+    }
+
+    return this.findOwnedOrFail(userId, id);
   }
 
   async findAll(userId: string, campaignId: string, query: QueryContentRunDto) {

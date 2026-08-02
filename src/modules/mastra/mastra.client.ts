@@ -70,12 +70,15 @@ export class MastraClient {
 
   /**
    * Resumes a suspended run. `step` names the suspended step Mastra is waiting
-   * on; `resumeData` is whatever that step's resume schema expects.
+   * on; `resumeData` is whatever that step's resume schema expects. `step` is
+   * omitted from the body entirely when the caller does not supply one, so
+   * Mastra can fall back to the single suspended step rather than being handed
+   * an explicit `undefined`.
    */
   async resumeRun<TResult>(
     workflowId: MastraWorkflowId,
     runId: string,
-    step: string | string[],
+    step: string | string[] | undefined,
     resumeData: unknown,
   ): Promise<MastraWorkflowResult<TResult>> {
     this.logger.log(`Resuming ${workflowId} run ${runId}`);
@@ -83,7 +86,7 @@ export class MastraClient {
     return this.request<MastraWorkflowResult<TResult>>(
       'POST',
       `/api/workflows/${workflowId}/resume-async?runId=${encodeURIComponent(runId)}`,
-      { step, resumeData },
+      { ...(step === undefined ? {} : { step }), resumeData },
     );
   }
 

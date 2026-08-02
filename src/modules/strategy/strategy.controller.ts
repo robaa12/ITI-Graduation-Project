@@ -65,4 +65,21 @@ export class StrategyController {
   ) {
     return this.strategyService.findOne(user.id, id);
   }
+
+  /**
+   * Answers a suspension and puts the run back on the queue. 202 for the same
+   * reason as starting one: the remaining steps still take minutes.
+   *
+   * Body: `{ step?, resumeData }`. `step` may be omitted when the run is
+   * waiting on a single step; `suspendPayload` on the row says what it is.
+   */
+  @Post(':id/resume')
+  @HttpCode(202)
+  resume(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.strategyService.resume(user.id, id, body);
+  }
 }
