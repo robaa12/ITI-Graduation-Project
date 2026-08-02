@@ -100,21 +100,37 @@ export class StrategyService {
       data: { runId },
     });
 
-    await this.queue.add(
-      'run',
-      { strategyId: record.id },
-      {
-        // Keyed to the row, so a double submit cannot start the same run twice.
-        jobId: `strategy-${record.id}`,
-        // Deliberately no retries: a workflow run costs real agent calls and
-        // minutes of work, and a lost response does not mean the run did not
-        // happen. Re-running is the caller's explicit decision, not the
-        // queue's — they POST again and get a fresh run.
-        attempts: 1,
-        removeOnComplete: { count: 100 },
-        removeOnFail: { count: 500 },
-      },
-    );
+    try {
+      await this.queue.add(
+        'run',
+        { strategyId: record.id },
+        {
+          // Keyed to the row, so a double submit cannot start the same run twice.
+          jobId: `strategy-${record.id}`,
+          // Deliberately no retries: a workflow run costs real agent calls and
+          // minutes of work, and a lost response does not mean it did not
+          // happen. Re-running is the caller's explicit decision, not the
+          // queue's — they POST again and get a fresh run.
+          attempts: 1,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      await this.prisma.marketingStrategy.updateMany({
+        where: { id: record.id },
+        data: { status: WorkflowRunStatus.FAILED, error: message },
+      });
+
+      this.logger.error(
+        `Could not enqueue strategy ${record.id}: ${message}`,
+      );
+      throw new ServiceUnavailableException(
+        'The workflow queue is unavailable, please retry',
+      );
+    }
 
     return withRun;
   }

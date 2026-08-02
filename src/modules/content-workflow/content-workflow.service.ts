@@ -59,7 +59,11 @@ export class ContentWorkflowService {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    const { strategyId, input } = await this.buildInput(userId, body);
+    const { strategyId, input } = await this.buildInput(
+      userId,
+      campaignId,
+      body,
+    );
 
     if (jsonByteLength(input) > MAX_INPUT_BYTES) {
       throw new BadRequestException(
@@ -100,19 +104,35 @@ export class ContentWorkflowService {
       data: { runId },
     });
 
-    await this.queue.add(
-      'run',
-      { contentRunId: record.id },
-      {
-        jobId: `content-run-${record.id}`,
-        // Same reasoning as the strategy queue: a run is expensive and a lost
-        // response does not mean it did not happen, so retrying is the
-        // caller's call, not the queue's.
-        attempts: 1,
-        removeOnComplete: { count: 100 },
-        removeOnFail: { count: 500 },
-      },
-    );
+    try {
+      await this.queue.add(
+        'run',
+        { contentRunId: record.id },
+        {
+          jobId: `content-run-${record.id}`,
+          // Same reasoning as the strategy queue: a run is expensive and a lost
+          // response does not mean it did not happen, so retrying is the
+          // caller's call, not the queue's.
+          attempts: 1,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      await this.prisma.campaignContentRun.updateMany({
+        where: { id: record.id },
+        data: { status: WorkflowRunStatus.FAILED, error: message },
+      });
+
+      this.logger.error(
+        `Could not enqueue content run ${record.id}: ${message}`,
+      );
+      throw new ServiceUnavailableException(
+        'The workflow queue is unavailable, please retry',
+      );
+    }
 
     return withRun;
   }
@@ -127,6 +147,7 @@ export class ContentWorkflowService {
    */
   private async buildInput(
     userId: string,
+    campaignId: string,
     body: Record<string, unknown>,
   ): Promise<{ strategyId: string | null; input: Record<string, unknown> }> {
     const { strategyId: rawId, ...rest } = body;
@@ -140,6 +161,12 @@ export class ContentWorkflowService {
     }
 
     const strategy = await this.strategyService.findOwnedOrFail(userId, rawId);
+
+    if (strategy.campaignId !== campaignId) {
+      throw new ConflictException(
+        `Strategy ${rawId} belongs to a different campaign`,
+      );
+    }
 
     if (strategy.status !== WorkflowRunStatus.READY) {
       throw new ConflictException(
