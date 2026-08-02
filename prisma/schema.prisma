@@ -94,6 +94,17 @@ enum ContentFormat {
   JSON
 }
 
+/// Lifecycle of one Mastra workflow run. SUSPENDED is a first-class state, not
+/// a failure: the content workflow can pause for human approval and is picked
+/// back up through the resume endpoint.
+enum WorkflowRunStatus {
+  PENDING
+  RUNNING
+  SUSPENDED
+  READY
+  FAILED
+}
+
 model Project {
   id          String        @id @default(uuid())
   name        String
@@ -129,9 +140,86 @@ model Campaign {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
+  strategies  MarketingStrategy[]
+  contentRuns CampaignContentRun[]
+
   @@index([projectId])
   @@index([projectId, status])
   @@map("campaign")
+}
+
+/// One run of the Mastra `marketingStrategyWorkflow`, always scoped to the
+/// campaign it was started from.
+model MarketingStrategy {
+  id String @id @default(uuid())
+
+  /// Mastra's own run id. Null until the worker has reserved a run — the row
+  /// exists first so a crash between insert and reservation is still visible.
+  runId String? @unique
+
+  status WorkflowRunStatus @default(PENDING)
+
+  /// Exactly what the client posted, forwarded to Mastra untouched. Kept so a
+  /// run can be replayed and so a schema change on the Mastra side never
+  /// silently rewrites history.
+  input Json
+
+  /// Full workflow result. `campaignStrategy` inside it is what the content
+  /// workflow consumes.
+  output Json?
+
+  /// Payload Mastra returned when it suspended, describing what it is waiting
+  /// for. Null in every other state.
+  suspendPayload Json?
+
+  error String?
+
+  campaignId  String
+  campaign    Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contentRuns CampaignContentRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@map("marketing_strategy")
+}
+
+/// One run of the Mastra `contentCreationWorkflow`. Holds the raw workflow
+/// payload; the calendar entries are also fanned out into GeneratedContent so
+/// the existing list/export/edit endpoints keep working on them.
+model CampaignContentRun {
+  id String @id @default(uuid())
+
+  runId String? @unique
+
+  status WorkflowRunStatus @default(PENDING)
+
+  input          Json
+  output         Json?
+  suspendPayload Json?
+  error          String?
+
+  /// Number of GeneratedContent rows fanned out from `output.calendar`.
+  contentCount Int                @default(0)
+  contents     GeneratedContent[]
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  /// Strategy this content was generated from. Kept nullable and SetNull so
+  /// deleting a strategy never destroys the content produced from it.
+  strategyId String?
+  strategy   MarketingStrategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([strategyId])
+  @@map("campaign_content_run")
 }
 
 model GeneratedContent {
@@ -159,10 +247,18 @@ model GeneratedContent {
   isEdited   Boolean  @default(false)
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+
+  /// Set when the row was fanned out from a content workflow run. Null for
+  /// rows produced by the per-item generate/regenerate pipeline. SetNull so
+  /// deleting a run leaves the content it produced in place.
+  contentRunId String?
+  contentRun   CampaignContentRun? @relation(fields: [contentRunId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([campaignId])
   @@index([campaignId, type])
+  @@index([contentRunId])
   @@map("generated_content")
 }

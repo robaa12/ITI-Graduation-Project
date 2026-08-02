@@ -60,3 +60,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Prisma backup files 
 prisma/schema.backup.prisma
 
+
+# Mastra agent workspace. Runs as its own service (Node >=22, ESM) and is
+# reached over HTTP via MASTRA_BASE_URL — the backend never imports from it,
+# so it stays out of this repo.
+marketing-workflow-demo/

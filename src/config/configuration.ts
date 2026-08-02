@@ -13,6 +13,13 @@ export default () => ({
     url: process.env.DATABASE_URL,
   },
 
+  /** Mastra service hosting the marketing strategy and content workflows. */
+  mastra: {
+    baseUrl: process.env.MASTRA_BASE_URL,
+    /** Per-request ceiling. Workflow runs chain 6-7 agents and are slow. */
+    timeoutMs: Number(process.env.MASTRA_TIMEOUT_MS ?? 600_000),
+  },
+
   /** Backing store for the BullMQ generation queue. */
   redis: {
     host: process.env.REDIS_HOST,
