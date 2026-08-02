@@ -14,6 +14,7 @@ import { EmailModule } from './modules/email/email.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { ContentModule } from './modules/content/content.module';
+import { StrategyModule } from './modules/strategy/strategy.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { ContentModule } from './modules/content/content.module';
     ProjectsModule,
     CampaignsModule,
     ContentModule,
+    StrategyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
