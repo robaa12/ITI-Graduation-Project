@@ -35,11 +35,14 @@ services:
   app:
     build: .
     restart: always
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     ports:
       - '${PORT:-3000}:3000'
     environment:
       NODE_ENV: production
       PORT: 3000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       DB_HOST: db
       DB_PORT: 5432
       DB_USERNAME: ${DB_USERNAME}
@@ -49,6 +52,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      MASTRA_BASE_URL: ${MASTRA_BASE_URL:-http://host.docker.internal:4111}
+      MASTRA_TIMEOUT_MS: ${MASTRA_TIMEOUT_MS:-600000}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL}
       SMTP_HOST: ${SMTP_HOST}
