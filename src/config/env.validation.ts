@@ -27,6 +27,7 @@ export const validationSchema = Joi.object({
   BETTER_AUTH_SECRET: Joi.string().min(32).required(),
 
   BETTER_AUTH_URL: Joi.string().uri().required(),
+  BETTER_AUTH_TRUSTED_ORIGINS: Joi.string().optional(),
 
   SMTP_HOST: Joi.string().required(),
   SMTP_PORT: Joi.number().default(587),

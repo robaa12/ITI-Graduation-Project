@@ -15,8 +15,6 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { MastraClient } from '../mastra/mastra.client';
-import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { StrategyService } from '../strategy/strategy.service';
 import {
@@ -35,7 +33,6 @@ export class ContentWorkflowService {
     private readonly prisma: PrismaService,
     private readonly campaignsService: CampaignsService,
     private readonly strategyService: StrategyService,
-    private readonly mastra: MastraClient,
     @InjectQueue(CONTENT_WORKFLOW_QUEUE)
     private readonly queue: Queue<ContentWorkflowJob>,
   ) {}
@@ -71,37 +68,16 @@ export class ContentWorkflowService {
       );
     }
 
+    // The worker creates and starts this exact ID at Mastra, keeping Studio,
+    // the queue job, and this database row attached to one execution.
     const record = await this.prisma.campaignContentRun.create({
       data: {
         campaignId,
         strategyId,
+        runId: randomUUID(),
         input: input as Prisma.InputJsonValue,
         status: WorkflowRunStatus.PENDING,
       },
-    });
-
-    let runId: string;
-    try {
-      runId = await this.mastra.createRun(MASTRA_WORKFLOWS.content);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      await this.prisma.campaignContentRun.update({
-        where: { id: record.id },
-        data: { status: WorkflowRunStatus.FAILED, error: message },
-      });
-
-      this.logger.error(
-        `Could not reserve a Mastra run for content run ${record.id}: ${message}`,
-      );
-      throw new ServiceUnavailableException(
-        'The workflow service is unavailable, please retry',
-      );
-    }
-
-    const withRun = await this.prisma.campaignContentRun.update({
-      where: { id: record.id },
-      data: { runId },
     });
 
     try {
@@ -134,7 +110,7 @@ export class ContentWorkflowService {
       );
     }
 
-    return withRun;
+    return record;
   }
 
   /**

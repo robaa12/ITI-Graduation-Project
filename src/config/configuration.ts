@@ -31,6 +31,10 @@ export default () => ({
   auth: {
     secret: process.env.BETTER_AUTH_SECRET,
     url: process.env.BETTER_AUTH_URL,
+    trustedOrigins: (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
   },
 
   smtp: {

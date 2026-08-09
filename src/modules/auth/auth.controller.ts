@@ -15,7 +15,7 @@ import {
 } from './dto/email-auth.dto';
 import { AuthService } from './auth.service';
 
-@Controller('api/auth')
+@Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 

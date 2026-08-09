@@ -16,6 +16,7 @@ import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { ContentModule } from './modules/content/content.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
 import { ContentWorkflowModule } from './modules/content-workflow/content-workflow.module';
+import { HistoryModule } from './modules/history/history.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { ContentWorkflowModule } from './modules/content-workflow/content-workfl
     ContentModule,
     StrategyModule,
     ContentWorkflowModule,
+    HistoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

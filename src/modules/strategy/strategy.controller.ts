@@ -7,13 +7,17 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Sse,
   UseGuards,
 } from '@nestjs/common';
+import { Observable } from 'rxjs';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
+import { MastraRunEventsService } from '../mastra/run-events.service';
+import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { StrategyService } from './strategy.service';
 
 /** A strategy run always belongs to the campaign it was started from. */
@@ -55,7 +59,20 @@ export class CampaignStrategyController {
 @Controller('strategies')
 @UseGuards(AuthGuard)
 export class StrategyController {
-  constructor(private readonly strategyService: StrategyService) {}
+  constructor(
+    private readonly strategyService: StrategyService,
+    private readonly events: MastraRunEventsService,
+  ) {}
+
+  @Sse(':id/events')
+  eventsForRun(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Observable<{ data: unknown }> {
+    return this.events.stream(MASTRA_WORKFLOWS.strategy, () =>
+      this.strategyService.findOwnedOrFail(user.id, id),
+    );
+  }
 
   /** Poll target: returns the row, including `output` once it is READY. */
   @Get(':id')

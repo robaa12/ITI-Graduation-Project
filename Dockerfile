@@ -14,7 +14,11 @@ COPY src/ ./src/
 
 RUN npm run build
 
-FROM node:22-alpine
+FROM builder AS migrator
+
+CMD ["npx", "prisma", "migrate", "deploy"]
+
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 

@@ -32,6 +32,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # Applies the committed Prisma migrations once the database accepts
+  # connections. Keeping this separate from the API image makes deployment
+  # ordering explicit and lets `docker compose up migrate` initialise a fresh
+  # database without starting the application.
+  migrate:
+    build:
+      context: .
+      target: migrator
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+
   app:
     build: .
     restart: always
@@ -49,6 +64,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE: ${DB_DATABASE}
       DATABASE_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}?schema=public
+      MASTRA_BASE_URL: ${MASTRA_BASE_URL:-http://host.docker.internal:4111}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
@@ -56,6 +72,7 @@ services:
       MASTRA_TIMEOUT_MS: ${MASTRA_TIMEOUT_MS:-600000}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:5173}
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER}
@@ -64,6 +81,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 

@@ -7,14 +7,18 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Sse,
   UseGuards,
 } from '@nestjs/common';
+import { Observable } from 'rxjs';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { ContentWorkflowService } from './content-workflow.service';
 import { QueryContentRunDto } from './dto/query-content-run.dto';
+import { MastraRunEventsService } from '../mastra/run-events.service';
+import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 
 @Controller('campaigns/:campaignId/content-runs')
 @UseGuards(AuthGuard)
@@ -51,7 +55,20 @@ export class CampaignContentRunController {
 @Controller('content-runs')
 @UseGuards(AuthGuard)
 export class ContentRunController {
-  constructor(private readonly service: ContentWorkflowService) {}
+  constructor(
+    private readonly service: ContentWorkflowService,
+    private readonly events: MastraRunEventsService,
+  ) {}
+
+  @Sse(':id/events')
+  eventsForRun(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Observable<{ data: unknown }> {
+    return this.events.stream(MASTRA_WORKFLOWS.content, () =>
+      this.service.findOwnedOrFail(user.id, id),
+    );
+  }
 
   /**
    * Poll target. Once READY, `output` holds the full workflow payload and the

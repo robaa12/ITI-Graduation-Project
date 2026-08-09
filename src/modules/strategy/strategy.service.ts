@@ -15,8 +15,6 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { MastraClient } from '../mastra/mastra.client';
-import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
 import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
@@ -36,7 +34,6 @@ export class StrategyService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly campaignsService: CampaignsService,
-    private readonly mastra: MastraClient,
     @InjectQueue(STRATEGY_QUEUE)
     private readonly queue: Queue<StrategyJob>,
   ) {}
@@ -44,10 +41,10 @@ export class StrategyService {
   /**
    * Starts a marketing strategy run for a campaign and returns immediately.
    *
-   * The Mastra run id is reserved here rather than in the worker so the caller
-   * gets it in the 202 — it is one cheap call, unlike the run itself. A Mastra
-   * that cannot be reached therefore fails the request outright instead of
-   * queueing work that was never going to start.
+   * Generate the Mastra run id locally and persist it before dispatch. The
+   * worker passes that id to Mastra's start endpoint, which creates and starts
+   * exactly one run. Calling Mastra's `create-run` here as well would create a
+   * second, permanently pending Studio run.
    */
   async start(
     userId: string,
@@ -66,38 +63,15 @@ export class StrategyService {
       );
     }
 
-    // Written before the run is reserved: if the reservation blows up, the
-    // failure is recorded against a row the client can actually look at.
+    // Written before the worker contacts Mastra so any startup failure is
+    // recorded against a row the client can actually inspect.
     const record = await this.prisma.marketingStrategy.create({
       data: {
         campaignId,
+        runId: randomUUID(),
         input: input as Prisma.InputJsonValue,
         status: WorkflowRunStatus.PENDING,
       },
-    });
-
-    let runId: string;
-    try {
-      runId = await this.mastra.createRun(MASTRA_WORKFLOWS.strategy);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      await this.prisma.marketingStrategy.update({
-        where: { id: record.id },
-        data: { status: WorkflowRunStatus.FAILED, error: message },
-      });
-
-      this.logger.error(
-        `Could not reserve a Mastra run for strategy ${record.id}: ${message}`,
-      );
-      throw new ServiceUnavailableException(
-        'The workflow service is unavailable, please retry',
-      );
-    }
-
-    const withRun = await this.prisma.marketingStrategy.update({
-      where: { id: record.id },
-      data: { runId },
     });
 
     try {
@@ -132,7 +106,7 @@ export class StrategyService {
       );
     }
 
-    return withRun;
+    return record;
   }
 
   /**

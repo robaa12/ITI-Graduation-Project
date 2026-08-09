@@ -30,29 +30,10 @@ export class MastraClient {
   }
 
   /**
-   * Reserves a run id without starting any work. Called before the run so the
-   * id can be persisted first — a crash mid-start then leaves a row that still
-   * points at something inspectable on the Mastra side.
-   */
-  async createRun(workflowId: MastraWorkflowId): Promise<string> {
-    const body = await this.request<{ runId?: string }>(
-      'POST',
-      `/api/workflows/${workflowId}/create-run`,
-    );
-
-    if (!body?.runId) {
-      throw new MastraRequestError(
-        `Mastra did not return a runId when creating a run for ${workflowId}`,
-      );
-    }
-
-    return body.runId;
-  }
-
-  /**
-   * Runs the workflow to completion (or to a suspend point) and returns the
-   * envelope. This blocks for as long as the workflow takes, which is why it is
-   * only ever called from a queue worker and never from a request handler.
+   * Creates then starts one fixed run id without holding an HTTP request open
+   * for the full model workflow. Mastra's `start-async` route can hit an
+   * upstream 504 while the run itself continues; `start` returns immediately
+   * and we inspect that exact run until it settles.
    */
   async startRun<TResult>(
     workflowId: MastraWorkflowId,
@@ -61,11 +42,19 @@ export class MastraClient {
   ): Promise<MastraWorkflowResult<TResult>> {
     this.logger.log(`Starting ${workflowId} run ${runId}`);
 
-    return this.request<MastraWorkflowResult<TResult>>(
+    // Mastra's non-blocking `start` endpoint deliberately requires a run that
+    // has already been created. Supplying our database's UUID here keeps the
+    // UI, backend record, and Studio entry tied to one execution.
+    await this.request(
       'POST',
-      `/api/workflows/${workflowId}/start-async?runId=${encodeURIComponent(runId)}`,
+      `/api/workflows/${workflowId}/create-run?runId=${encodeURIComponent(runId)}`,
+    );
+    await this.request(
+      'POST',
+      `/api/workflows/${workflowId}/start?runId=${encodeURIComponent(runId)}`,
       { inputData },
     );
+    return this.waitForRun<TResult>(workflowId, runId);
   }
 
   /**
@@ -83,11 +72,12 @@ export class MastraClient {
   ): Promise<MastraWorkflowResult<TResult>> {
     this.logger.log(`Resuming ${workflowId} run ${runId}`);
 
-    return this.request<MastraWorkflowResult<TResult>>(
+    await this.request(
       'POST',
-      `/api/workflows/${workflowId}/resume-async?runId=${encodeURIComponent(runId)}`,
+      `/api/workflows/${workflowId}/resume?runId=${encodeURIComponent(runId)}`,
       { ...(step === undefined ? {} : { step }), resumeData },
     );
+    return this.waitForRun<TResult>(workflowId, runId);
   }
 
   /**
@@ -99,6 +89,43 @@ export class MastraClient {
     return this.request(
       'GET',
       `/api/workflows/${workflowId}/runs/${encodeURIComponent(runId)}`,
+    );
+  }
+
+  private async waitForRun<TResult>(
+    workflowId: MastraWorkflowId,
+    runId: string,
+  ): Promise<MastraWorkflowResult<TResult>> {
+    const deadline = Date.now() + this.timeoutMs;
+
+    while (Date.now() < deadline) {
+      const state = (await this.getRun(workflowId, runId)) as {
+        status?: string;
+        result?: TResult;
+        error?: unknown;
+        steps?: Record<string, unknown>;
+        suspended?: unknown;
+      };
+
+      if (
+        state.status === 'success' ||
+        state.status === 'failed' ||
+        state.status === 'suspended'
+      ) {
+        return {
+          status: state.status,
+          result: state.result,
+          error: state.error,
+          steps: state.steps,
+          suspended: state.suspended,
+        };
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+    }
+
+    throw new MastraRequestError(
+      `Mastra run ${runId} did not settle within ${this.timeoutMs}ms`,
     );
   }
 

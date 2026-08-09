@@ -18,7 +18,7 @@ export type MastraWorkflowId =
  */
 export type MastraRunStatus = 'success' | 'failed' | 'suspended';
 
-/** Envelope returned by start-async / resume-async. */
+/** Terminal envelope assembled from Mastra's persisted workflow state. */
 export interface MastraWorkflowResult<TResult = unknown> {
   status: MastraRunStatus;
   /** Present when `status` is `success`. */

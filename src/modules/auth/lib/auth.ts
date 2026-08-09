@@ -18,7 +18,10 @@ export const createAuth = (
     secret: configService.getOrThrow<string>('BETTER_AUTH_SECRET'),
     baseURL: configService.getOrThrow<string>('BETTER_AUTH_URL'),
     basePath: '/api/auth',
-    trustedOrigins: [configService.getOrThrow<string>('app.frontendUrl')],
+    trustedOrigins:
+      configService.get<string[]>('auth.trustedOrigins')?.length
+        ? configService.get<string[]>('auth.trustedOrigins')
+        : [configService.getOrThrow<string>('app.frontendUrl')],
 
     database: prismaAdapter(prisma, {
       provider: 'postgresql',

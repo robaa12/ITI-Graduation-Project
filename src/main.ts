@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
@@ -13,6 +14,16 @@ const MAX_REQUEST_BODY = '256kb';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const config = app.get(ConfigService);
+
+  // Every browser-facing application endpoint lives below `/api`. The Mastra
+  // service remains a private dependency of this process rather than a second
+  // public API the browser can call directly.
+  app.setGlobalPrefix('api');
+  app.enableCors({
+    origin: config.get<string[]>('auth.trustedOrigins') ?? [],
+    credentials: true,
+  });
 
   app.enableCors({
     origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
