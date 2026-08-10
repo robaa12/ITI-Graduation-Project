@@ -92,6 +92,50 @@ export class MastraClient {
     );
   }
 
+  async indexKnowledgeSource(input: {
+    projectId: string;
+    sourceId: string;
+    sourceType: string;
+    name: string;
+    url?: string | null;
+    content: string;
+    documents?: Array<{ pageId: string; title: string; url: string; content: string }>;
+  }): Promise<{ chunkCount: number; embeddingModel?: string; indexVersion?: string }> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) {
+      throw new MastraRequestError(
+        'MASTRA_INTERNAL_TOKEN is required before knowledge indexing can run',
+      );
+    }
+    return this.request(
+      'POST',
+      '/internal/knowledge/index',
+      input,
+      { 'X-Mastra-Internal-Token': token },
+    );
+  }
+
+  async deleteKnowledgeSource(sourceId: string): Promise<void> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) return;
+    await this.request(
+      'POST',
+      '/internal/knowledge/delete',
+      { sourceId },
+      { 'X-Mastra-Internal-Token': token },
+    );
+  }
+
+  async queryProjectKnowledge(projectId: string, sourceIds: string[], query: string): Promise<{ answer: string; citations: Array<{
+    sourceId: string; pageId?: string; chunkId?: string; sourceType: string; title: string; url?: string; excerpt: string; score: number;
+  }> }> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) throw new MastraRequestError('MASTRA_INTERNAL_TOKEN is required before knowledge retrieval can run');
+    return this.request<{ answer: string; citations: Array<{
+      sourceId: string; pageId?: string; chunkId?: string; sourceType: string; title: string; url?: string; excerpt: string; score: number;
+    }> }>('POST', '/internal/knowledge/query', { projectId, sourceIds, query }, { 'X-Mastra-Internal-Token': token });
+  }
+
   private async waitForRun<TResult>(
     workflowId: MastraWorkflowId,
     runId: string,
@@ -133,6 +177,7 @@ export class MastraClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
 
@@ -140,7 +185,10 @@ export class MastraClient {
     try {
       response = await fetch(url, {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers:
+          body || extraHeaders
+            ? { ...(body ? { 'Content-Type': 'application/json' } : {}), ...extraHeaders }
+            : undefined,
         body: body === undefined ? undefined : JSON.stringify(body),
         // A workflow chains six or seven agents, so the ceiling is minutes, not
         // seconds. Without it a hung Mastra process would pin a worker forever.

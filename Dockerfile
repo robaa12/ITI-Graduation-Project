@@ -28,6 +28,8 @@ COPY package*.json ./
 
 RUN npm ci --omit=dev && npm cache clean --force
 
+ENV CRAWLEE_STORAGE_DIR=/tmp/crawlee
+
 # Reuse the client generated in the builder. Dependencies are installed before
 # the schema is copied into the runtime image, so generate it during the build.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma

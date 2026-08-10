@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: always
     environment:
       POSTGRES_USER: ${DB_USERNAME}
@@ -32,6 +32,25 @@ services:
       timeout: 5s
       retries: 5
 
+  # Deliberately opt-in: do not start this profile or pull a model until the
+  # host GPU/driver is healthy. Mastra running on the host reaches it through
+  # http://localhost:11434; a containerized Mastra can use http://ollama:11434.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ['local-rag']
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   # Applies the committed Prisma migrations once the database accepts
   # connections. Keeping this separate from the API image makes deployment
   # ordering explicit and lets `docker compose up migrate` initialise a fresh
@@ -46,6 +65,44 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # Long-running Mastra workflow API. Its generated server exposes the
+  # workflow endpoints and internal project-knowledge routes on the private
+  # Compose network; port 4111 remains published for Studio/API diagnostics.
+  mastra:
+    build:
+      context: ../marketing_demo
+    restart: unless-stopped
+    env_file:
+      - ../marketing_demo/.env
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '${MASTRA_PORT:-4111}:4111'
+    environment:
+      NODE_ENV: production
+      PORT: 4111
+      MASTRA_HOST: 0.0.0.0
+      MASTRA_STORAGE_URL: file:/app/data/marketing.db
+      MASTRA_OBSERVABILITY_PATH: /app/data/observability.duckdb
+      MASTRA_INTERNAL_TOKEN: ${MASTRA_INTERNAL_TOKEN:-}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      RAG_POSTGRES_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}
+      RAG_POSTGRES_SCHEMA: ${RAG_POSTGRES_SCHEMA:-rag}
+      OLLAMA_BASE_URL: ${MASTRA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - mastra_data:/app/data
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:4111/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   app:
     build: .
@@ -64,12 +121,13 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE: ${DB_DATABASE}
       DATABASE_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${DB_DATABASE}?schema=public
-      MASTRA_BASE_URL: ${MASTRA_BASE_URL:-http://host.docker.internal:4111}
+      MASTRA_BASE_URL: http://mastra:4111
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      MASTRA_BASE_URL: ${MASTRA_BASE_URL:-http://host.docker.internal:4111}
       MASTRA_TIMEOUT_MS: ${MASTRA_TIMEOUT_MS:-600000}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      MASTRA_INTERNAL_TOKEN: ${MASTRA_INTERNAL_TOKEN:-}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:5173}
@@ -85,7 +143,11 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      mastra:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   redis_data:
+  ollama_data:
+  mastra_data:

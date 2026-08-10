@@ -105,6 +105,20 @@ enum WorkflowRunStatus {
   FAILED
 }
 
+enum KnowledgeSourceType {
+  WEBSITE
+  DOCUMENT
+  FACEBOOK
+  INSTAGRAM
+}
+
+enum KnowledgeSourceStatus {
+  PENDING
+  INDEXING
+  READY
+  FAILED
+}
+
 model Project {
   id          String        @id @default(uuid())
   name        String
@@ -114,12 +128,63 @@ model Project {
   userId      String
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   campaigns   Campaign[]
+  knowledgeSources KnowledgeSource[]
+  brandProfile Json?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   @@index([userId])
   @@index([userId, status])
   @@map("project")
+}
+
+/// Project-owned material used to ground strategy and content generation.
+/// The normalized text is deliberately stored separately from generated work,
+/// so a source can be refreshed or removed without changing past runs.
+model KnowledgeSource {
+  id        String                @id @default(uuid())
+  type      KnowledgeSourceType
+  status    KnowledgeSourceStatus @default(PENDING)
+  name      String
+  url       String?
+  content   String?               @db.Text
+  metadata  Json?
+  error     String?
+  indexedAt DateTime?
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pages     KnowledgePage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@map("knowledge_source")
+}
+
+/// One public HTML page discovered under a website knowledge source. Keeping
+/// this normalized lets retrieval cite the actual FAQ/product/about page that
+/// supports a generated claim instead of only the submitted homepage.
+model KnowledgePage {
+  id        String   @id @default(uuid())
+  url       String
+  title     String
+  content   String   @db.Text
+  contentHash String
+  error     String?
+  crawledAt DateTime @default(now())
+
+  sourceId String
+  source   KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceId, url])
+  @@index([sourceId])
+  @@map("knowledge_page")
 }
 
 model Campaign {

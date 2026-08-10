@@ -19,6 +19,11 @@ export default () => ({
     baseUrl: process.env.MASTRA_BASE_URL,
     /** Per-request ceiling. Workflow runs chain 6-7 agents and are slow. */
     timeoutMs: Number(process.env.MASTRA_TIMEOUT_MS ?? 600_000),
+    internalToken: process.env.MASTRA_INTERNAL_TOKEN,
+  },
+
+  knowledge: {
+    enabled: process.env.RAG_ENABLED === 'true',
   },
 
   /** Backing store for the BullMQ generation queue. */

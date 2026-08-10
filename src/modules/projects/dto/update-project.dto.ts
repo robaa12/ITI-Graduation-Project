@@ -1,4 +1,6 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsOptional, IsString, MaxLength, MinLength, ValidateNested } from 'class-validator';
+import { BrandProfileDto } from './brand-profile.dto';
 
 export class UpdateProjectDto {
   @IsOptional()
@@ -11,4 +13,9 @@ export class UpdateProjectDto {
   @IsString()
   @MaxLength(2000)
   description?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => BrandProfileDto)
+  brandProfile?: BrandProfileDto;
 }

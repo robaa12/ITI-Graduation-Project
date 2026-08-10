@@ -19,6 +19,12 @@ export const validationSchema = Joi.object({
 
   MASTRA_BASE_URL: Joi.string().uri().required(),
   MASTRA_TIMEOUT_MS: Joi.number().default(600000),
+  RAG_ENABLED: Joi.boolean().default(false),
+  MASTRA_INTERNAL_TOKEN: Joi.string().min(24).when('RAG_ENABLED', {
+    is: true,
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
 
   REDIS_HOST: Joi.string().required(),
   REDIS_PORT: Joi.number().default(6379),

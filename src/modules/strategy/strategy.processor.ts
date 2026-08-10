@@ -1,6 +1,6 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Prisma, WorkflowRunStatus } from '@prisma/client';
+import { KnowledgeSourceStatus, Prisma, WorkflowRunStatus } from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,6 +30,7 @@ export class StrategyProcessor extends WorkerHost {
 
     const strategy = await this.prisma.marketingStrategy.findUnique({
       where: { id: strategyId },
+      include: { campaign: { select: { projectId: true, project: { select: { brandProfile: true } } } } },
     });
 
     if (!strategy) {
@@ -52,6 +53,11 @@ export class StrategyProcessor extends WorkerHost {
 
     const { resume } = job.data;
 
+    const readySources = await this.prisma.knowledgeSource.findMany({
+      where: { projectId: strategy.campaign.projectId, status: KnowledgeSourceStatus.READY },
+      select: { id: true },
+    });
+
     const result = resume
       ? await this.mastra.resumeRun(
           MASTRA_WORKFLOWS.strategy,
@@ -62,7 +68,18 @@ export class StrategyProcessor extends WorkerHost {
       : await this.mastra.startRun(
           MASTRA_WORKFLOWS.strategy,
           strategy.runId,
-          strategy.input,
+          {
+            ...(strategy.input as Record<string, unknown>),
+            // This value is derived from the owned campaign, never accepted
+            // from a browser, so Mastra retrieval cannot cross project scope.
+            knowledgeScope: {
+              projectId: strategy.campaign.projectId,
+              sourceIds: readySources.map((source) => source.id),
+            },
+            ...(strategy.campaign.project.brandProfile
+              ? { brandProfile: strategy.campaign.project.brandProfile }
+              : {}),
+          },
         );
 
     const status = toWorkflowRunStatus(result);

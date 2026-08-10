@@ -117,6 +117,9 @@ export class ProjectsService {
         ...(dto.description !== undefined
           ? { description: dto.description }
           : {}),
+        ...(dto.brandProfile !== undefined
+          ? { brandProfile: dto.brandProfile as unknown as Prisma.InputJsonValue }
+          : {}),
       },
     });
   }

@@ -1,6 +1,6 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Prisma, WorkflowRunStatus } from '@prisma/client';
+import { KnowledgeSourceStatus, Prisma, WorkflowRunStatus } from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -29,6 +29,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
 
     const run = await this.prisma.campaignContentRun.findUnique({
       where: { id: contentRunId },
+      include: { campaign: { select: { projectId: true, project: { select: { brandProfile: true } } } } },
     });
 
     if (!run) {
@@ -53,6 +54,11 @@ export class ContentWorkflowProcessor extends WorkerHost {
 
     const { resume } = job.data;
 
+    const readySources = await this.prisma.knowledgeSource.findMany({
+      where: { projectId: run.campaign.projectId, status: KnowledgeSourceStatus.READY },
+      select: { id: true },
+    });
+
     const result = resume
       ? await this.mastra.resumeRun(
           MASTRA_WORKFLOWS.content,
@@ -63,7 +69,16 @@ export class ContentWorkflowProcessor extends WorkerHost {
       : await this.mastra.startRun(
           MASTRA_WORKFLOWS.content,
           run.runId,
-          run.input,
+          {
+            ...(run.input as Record<string, unknown>),
+            knowledgeScope: {
+              projectId: run.campaign.projectId,
+              sourceIds: readySources.map((source) => source.id),
+            },
+            ...(run.campaign.project.brandProfile
+              ? { brandProfile: run.campaign.project.brandProfile }
+              : {}),
+          },
         );
 
     const status = toWorkflowRunStatus(result);
