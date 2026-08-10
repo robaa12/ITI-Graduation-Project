@@ -28,7 +28,11 @@ export function validateSignUpEmailDto(body: unknown): SignUpEmailDto {
   assertOptionalString(dto.callbackURL, 'callbackURL');
   assertOptionalBoolean(dto.rememberMe, 'rememberMe');
 
-  return dto as unknown as SignUpEmailDto;
+  return {
+    ...dto,
+    name: dto.name.trim(),
+    email: dto.email.trim().toLowerCase(),
+  } as SignUpEmailDto;
 }
 
 export function validateSignInEmailDto(body: unknown): SignInEmailDto {
@@ -39,7 +43,10 @@ export function validateSignInEmailDto(body: unknown): SignInEmailDto {
   assertOptionalString(dto.callbackURL, 'callbackURL');
   assertOptionalBoolean(dto.rememberMe, 'rememberMe');
 
-  return dto as unknown as SignInEmailDto;
+  return {
+    ...dto,
+    email: dto.email.trim().toLowerCase(),
+  } as SignInEmailDto;
 }
 
 function assertObject(value: unknown): Record<string, unknown> {
@@ -59,7 +66,7 @@ function assertString(value: unknown, field: string): asserts value is string {
 function assertEmail(value: unknown): asserts value is string {
   assertString(value, 'email');
 
-  if (!emailPattern.test(value)) {
+  if (!emailPattern.test(value.trim())) {
     throw new BadRequestException('email must be a valid email address');
   }
 }

@@ -6,6 +6,7 @@ import {
   Post,
   Req,
   Res,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
@@ -26,8 +27,16 @@ export class AuthController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    validateSignUpEmailDto(body);
+    const dto = validateSignUpEmailDto(body);
 
+    if (await this.authService.isEmailRegistered(dto.email)) {
+      throw new UnprocessableEntityException({
+        code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL',
+        message: 'The email already exists.',
+      });
+    }
+
+    req.body = dto;
     await this.authService.handle(req, res);
   }
 
@@ -38,8 +47,9 @@ export class AuthController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    validateSignInEmailDto(body);
+    const dto = validateSignInEmailDto(body);
 
+    req.body = dto;
     await this.authService.handle(req, res);
   }
 

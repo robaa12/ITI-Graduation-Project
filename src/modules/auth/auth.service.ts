@@ -42,6 +42,26 @@ export class AuthService {
     return { user: session.user };
   }
 
+  /**
+   * Better Auth can intentionally return a neutral signup response for an
+   * existing address. This product opts into an explicit field-level error,
+   * so check case-insensitively before handing the request to Better Auth.
+   * The database unique constraint remains the final guard against races.
+   */
+  async isEmailRegistered(email: string): Promise<boolean> {
+    const user = await this.prismaService.user.findFirst({
+      where: {
+        email: {
+          equals: email.trim(),
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true },
+    });
+
+    return Boolean(user);
+  }
+
   async handle(
     req: Request,
     res: Response,
