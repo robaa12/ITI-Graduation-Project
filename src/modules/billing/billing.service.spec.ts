@@ -30,6 +30,7 @@ describe('BillingService', () => {
   let stripe: {
     checkout: { sessions: { create: jest.Mock } };
     customers: { create: jest.Mock };
+    invoices: { retrieve: jest.Mock };
     subscriptions: {
       cancel: jest.Mock;
       retrieve: jest.Mock;
@@ -55,6 +56,7 @@ describe('BillingService', () => {
     stripe = {
       checkout: { sessions: { create: jest.fn() } },
       customers: { create: jest.fn() },
+      invoices: { retrieve: jest.fn() },
       subscriptions: {
         cancel: jest.fn(),
         retrieve: jest.fn(),
@@ -283,7 +285,7 @@ describe('BillingService', () => {
   });
 
   describe('changePlan', () => {
-    const SUBSCRIPTION = {
+    const BASE_SUBSCRIPTION = {
       userId: 'user-1',
       stripeSubscriptionId: 'sub_live',
       status: SubscriptionStatus.ACTIVE,
@@ -300,10 +302,12 @@ describe('BillingService', () => {
       active: true,
     };
 
-    it('upgrades using Stripe default proration and syncs the DB', async () => {
-      prisma.subscription.findUnique
-        .mockResolvedValueOnce(SUBSCRIPTION)
-        .mockResolvedValueOnce({ ...SUBSCRIPTION, plan: NEW_PLAN });
+    afterEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('upgrades by invoicing the prorated difference and returns the hosted invoice url', async () => {
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
       prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
       stripe.subscriptions.retrieve.mockResolvedValue({
         items: { data: [CURRENT_ITEM] },
@@ -311,6 +315,13 @@ describe('BillingService', () => {
       stripe.subscriptions.update.mockResolvedValue({
         status: 'active',
         items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+        latest_invoice: 'inv_123',
+      });
+      stripe.invoices.retrieve.mockResolvedValue({
+        id: 'inv_123',
+        status: 'open',
+        amount_due: 5000,
+        hosted_invoice_url: 'https://pay.stripe.com/inv_123',
       });
 
       const result = await service.changePlan('user-1', {
@@ -322,9 +333,12 @@ describe('BillingService', () => {
         'sub_live',
         expect.objectContaining({
           items: [{ id: 'si_current', price: 'price_pro_monthly' }],
-          proration_behavior: 'create_prorations',
+          proration_behavior: 'always_invoice',
+          payment_behavior: 'default_incomplete',
         }),
       );
+      expect(stripe.invoices.retrieve).toHaveBeenCalledWith('inv_123');
+      expect(result).toEqual({ url: 'https://pay.stripe.com/inv_123' });
       expect(prisma.subscription.update).toHaveBeenCalledWith({
         where: { userId: 'user-1' },
         data: expect.objectContaining({
@@ -333,13 +347,10 @@ describe('BillingService', () => {
           stripePriceId: 'price_pro_monthly',
         }),
       });
-      expect(result).toMatchObject({ userId: 'user-1' });
     });
 
-    it('supports downgrade without a client-supplied price', async () => {
-      prisma.subscription.findUnique
-        .mockResolvedValueOnce(SUBSCRIPTION)
-        .mockResolvedValueOnce({ ...SUBSCRIPTION, plan: NEW_PLAN });
+    it('applies a payment-free switch with a null url (downgrade credit)', async () => {
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
       prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
       stripe.subscriptions.retrieve.mockResolvedValue({
         items: { data: [CURRENT_ITEM] },
@@ -347,6 +358,39 @@ describe('BillingService', () => {
       stripe.subscriptions.update.mockResolvedValue({
         status: 'active',
         items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+        latest_invoice: 'inv_123',
+      });
+      stripe.invoices.retrieve.mockResolvedValue({
+        id: 'inv_123',
+        status: 'open',
+        amount_due: 0,
+        hosted_invoice_url: 'https://pay.stripe.com/inv_123',
+      });
+
+      const result = await service.changePlan('user-1', {
+        planCode: 'pro',
+        interval: 'month',
+      });
+
+      expect(result).toEqual({ url: null });
+    });
+
+    it('supports downgrade without a client-supplied price', async () => {
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
+      prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        items: { data: [CURRENT_ITEM] },
+      });
+      stripe.subscriptions.update.mockResolvedValue({
+        status: 'active',
+        items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+        latest_invoice: 'inv_123',
+      });
+      stripe.invoices.retrieve.mockResolvedValue({
+        id: 'inv_123',
+        status: 'open',
+        amount_due: 0,
+        hosted_invoice_url: 'https://pay.stripe.com/inv_123',
       });
 
       await service.changePlan('user-1', {
@@ -367,7 +411,7 @@ describe('BillingService', () => {
     });
 
     it('rejects switching to an unknown plan', async () => {
-      prisma.subscription.findUnique.mockResolvedValue(SUBSCRIPTION);
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
       prisma.plan.findFirst.mockResolvedValue(null);
 
       await expect(
@@ -377,7 +421,7 @@ describe('BillingService', () => {
     });
 
     it('rejects a plan with no Price for the requested interval', async () => {
-      prisma.subscription.findUnique.mockResolvedValue(SUBSCRIPTION);
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
       prisma.plan.findFirst.mockResolvedValue({
         ...NEW_PLAN,
         stripeMonthlyPriceId: null,
@@ -388,20 +432,81 @@ describe('BillingService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('rejects when the subscription has no Stripe subscription id', async () => {
-      prisma.subscription.findUnique.mockResolvedValue({
-        ...SUBSCRIPTION,
-        stripeSubscriptionId: null,
-      });
+    it('routes a subscription with no Stripe id back to fresh checkout', async () => {
+      prisma.subscription.findUnique
+        .mockResolvedValueOnce({
+          ...BASE_SUBSCRIPTION,
+          stripeSubscriptionId: null,
+        })
+        .mockResolvedValue(null); // createCheckoutSession active-check
+      prisma.user.findUnique.mockResolvedValue(USER);
       prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+      stripe.checkout.sessions.create.mockResolvedValue({
+        id: 'cs_123',
+        url: 'https://checkout.stripe.com/123',
+      });
+      stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
 
-      await expect(
-        service.changePlan('user-1', { planCode: 'pro', interval: 'month' }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      const result = await service.changePlan('user-1', {
+        planCode: 'pro',
+        interval: 'month',
+      });
+
+      expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+      expect(result.url).toBe('https://checkout.stripe.com/123');
+    });
+
+    it('routes a cancelled subscription back to fresh checkout', async () => {
+      prisma.subscription.findUnique
+        .mockResolvedValueOnce({
+          ...BASE_SUBSCRIPTION,
+          status: SubscriptionStatus.CANCELLED,
+        })
+        .mockResolvedValue(null); // createCheckoutSession active-check
+      prisma.user.findUnique.mockResolvedValue(USER);
+      prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+      stripe.checkout.sessions.create.mockResolvedValue({
+        id: 'cs_123',
+        url: 'https://checkout.stripe.com/123',
+      });
+      stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+
+      const result = await service.changePlan('user-1', {
+        planCode: 'pro',
+        interval: 'month',
+      });
+
+      expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+      expect(result.url).toBe('https://checkout.stripe.com/123');
+    });
+
+    it('routes a subscription deleted in Stripe back to fresh checkout', async () => {
+      prisma.subscription.findUnique
+        .mockResolvedValueOnce(BASE_SUBSCRIPTION)
+        .mockResolvedValue(null); // createCheckoutSession active-check
+      prisma.user.findUnique.mockResolvedValue(USER);
+      prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+      stripe.subscriptions.retrieve.mockRejectedValue(
+        new Error('resource_missing'),
+      );
+      stripe.checkout.sessions.create.mockResolvedValue({
+        id: 'cs_123',
+        url: 'https://checkout.stripe.com/123',
+      });
+      stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+
+      const result = await service.changePlan('user-1', {
+        planCode: 'pro',
+        interval: 'month',
+      });
+
+      expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+      expect(result.url).toBe('https://checkout.stripe.com/123');
     });
 
     it('returns 503 when the Stripe update fails', async () => {
-      prisma.subscription.findUnique.mockResolvedValue(SUBSCRIPTION);
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
       prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
       stripe.subscriptions.retrieve.mockResolvedValue({
         items: { data: [CURRENT_ITEM] },
