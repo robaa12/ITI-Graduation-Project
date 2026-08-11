@@ -1,7 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { json, urlencoded } from 'express';
+import { json, raw, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 /**
@@ -29,6 +29,12 @@ async function bootstrap() {
     origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
     credentials: true,
   });
+
+  // Stripe must receive the exact bytes it signed, so the webhook route uses a
+  // raw parser (registered before the global JSON parser for that path). Once
+  // the raw parser consumes the stream the JSON parser's `req._body` guard
+  // keeps it from double-parsing; the controller verifies the Buffer.
+  app.use('/api/stripe/webhook', raw({ type: () => true }));
 
   app.use(json({ limit: MAX_REQUEST_BODY }));
   app.use(urlencoded({ extended: true, limit: MAX_REQUEST_BODY }));

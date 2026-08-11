@@ -20,6 +20,7 @@ model User {
   projects          Project[]
   socialConnections SocialConnection[]
   metaOAuthStates   MetaOAuthState[]
+  subscription      Subscription?
 
   @@unique([email])
   @@map("user")
@@ -71,6 +72,93 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+/// Application-level representation of a purchasable SaaS plan. The Stripe
+/// Product/Price mapping lives here so adding a plan never requires touching
+/// application code or hardcoding Stripe IDs.
+model Plan {
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  name                 String
+  description          String?
+  sortOrder            Int      @default(0)
+  active               Boolean  @default(true)
+  stripeProductId      String
+  stripeMonthlyPriceId String?
+  stripeYearlyPriceId  String?
+  // Display prices in cents (minor units) for the frontend pricing section.
+  // They mirror the Stripe Prices and are the source of truth for billing.
+  priceMonthlyCents    Int?
+  priceYearlyCents     Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@index([active])
+  @@map("plan")
+}
+
+/// Live state of one user's Stripe subscription. Mirrors Stripe's subscription
+/// status so the application can gate access without querying Stripe. Only
+/// identifiers are stored — never card numbers or raw payment credentials.
+model Subscription {
+  id                   String              @id @default(uuid())
+  userId               String              @unique
+  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId               String?
+  plan                 Plan?               @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus  @default(INCOMPLETE)
+  billingInterval      BillingInterval?
+  stripeCustomerId     String?             @unique
+  stripeSubscriptionId String?             @unique
+  stripePriceId        String?
+  checkoutSessionId    String?             @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean             @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  events               SubscriptionEvent[]
+
+  @@index([status])
+  @@index([stripeSubscriptionId])
+  @@map("subscription")
+}
+
+/// Idempotency + audit trail for Stripe webhook events. `stripeEventId` unique
+/// guards against duplicate deliveries; the JSON payload preserves the raw
+/// event for debugging without relying on Stripe's retry window.
+model SubscriptionEvent {
+  id             String        @id @default(uuid())
+  stripeEventId  String        @unique
+  type           String
+  payload        Json
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  processedAt    DateTime      @default(now())
+
+  @@index([subscriptionId])
+  @@index([type])
+  @@map("subscription_event")
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  UNPAID
+  CANCELLED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
 }
 
 enum ProjectStatus {
@@ -315,12 +403,12 @@ model MarketingStrategy {
 /// as a snapshot so a historical decision remains understandable even if the
 /// user later changes their profile details.
 model StrategyReviewEvent {
-  id       String                 @id @default(uuid())
-  action   StrategyApprovalStatus
-  note     String?
+  id           String                 @id @default(uuid())
+  action       StrategyApprovalStatus
+  note         String?
   reviewerId   String
   reviewerName String
-  output   Json?
+  output       Json?
 
   strategyId String
   strategy   MarketingStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
@@ -347,7 +435,7 @@ model CampaignContentRun {
   error          String?
 
   /// Number of GeneratedContent rows fanned out from `output.calendar`.
-  contentCount Int                @default(0)
+  contentCount Int                 @default(0)
   contents     GeneratedContent[]
   executions   WorkflowExecution[]
 
@@ -381,10 +469,10 @@ model WorkflowExecution {
   outputTokens Int @default(0)
   totalTokens  Int @default(0)
 
-  estimatedCost   Decimal?                 @db.Decimal(20, 10)
-  costUnit       String?
+  estimatedCost    Decimal?                 @db.Decimal(20, 10)
+  costUnit         String?
   accountingStatus WorkflowAccountingStatus @default(PENDING)
-  modelBreakdown Json?
+  modelBreakdown   Json?
   usageCollectedAt DateTime?
   startedAt        DateTime?
   finishedAt       DateTime?
