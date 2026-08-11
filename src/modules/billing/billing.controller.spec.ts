@@ -68,9 +68,19 @@ describe('BillingController (auth routing)', () => {
   const unauthServer = () => request(app.getHttpServer());
 
   describe('authentication gate', () => {
-    it('blocks every subscription route without a session', async () => {
+    it('leaves plan listing public (visited by the landing page before login)', async () => {
+      billingService.listPlans.mockResolvedValue([
+        { code: 'pro', name: 'Pro', description: '', sortOrder: 2 },
+      ]);
+
+      await request(app.getHttpServer())
+        .get('/api/subscriptions/plans')
+        .expect(200)
+        .expect([{ code: 'pro', name: 'Pro', description: '', sortOrder: 2 }]);
+    });
+
+    it('blocks every authenticated subscription route without a session', async () => {
       const http = unauthServer();
-      await http.get('/api/subscriptions/plans').expect(401);
       await http.get('/api/subscriptions/me').expect(401);
       await http
         .post('/api/subscriptions/checkout')

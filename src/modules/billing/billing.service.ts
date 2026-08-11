@@ -74,7 +74,7 @@ export class BillingService {
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
   ) {}
 
-  /** Active plans in display order. Price metadata kept internal. */
+  /** Active plans in display order, with display prices in cents. */
   listPlans() {
     return this.prisma.plan.findMany({
       where: { active: true },
@@ -84,6 +84,8 @@ export class BillingService {
         name: true,
         description: true,
         sortOrder: true,
+        priceMonthlyCents: true,
+        priceYearlyCents: true,
       },
     });
   }

@@ -8,6 +8,7 @@
   "scripts": {
     "prebuild": "prisma generate",
     "build": "nest build",
+    "db:seed": "prisma db seed",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "node scripts/start-local-dev.mjs",

@@ -78,8 +78,22 @@ describe('BillingService', () => {
   describe('listPlans', () => {
     it('returns only active plans, ordered, without internal price ids', async () => {
       const planRows = [
-        { code: 'pro', name: 'Pro', description: null, sortOrder: 2 },
-        { code: 'basic', name: 'Basic', description: null, sortOrder: 1 },
+        {
+          code: 'pro',
+          name: 'Pro',
+          description: null,
+          sortOrder: 2,
+          priceMonthlyCents: 1500,
+          priceYearlyCents: 15000,
+        },
+        {
+          code: 'basic',
+          name: 'Basic',
+          description: null,
+          sortOrder: 1,
+          priceMonthlyCents: null,
+          priceYearlyCents: null,
+        },
       ];
       prisma.plan.findMany.mockResolvedValue(planRows);
 
@@ -92,6 +106,8 @@ describe('BillingService', () => {
           name: true,
           description: true,
           sortOrder: true,
+          priceMonthlyCents: true,
+          priceYearlyCents: true,
         },
       });
       expect(Object.keys(planRows[0]).some((k) => k.includes('Price'))).toBe(

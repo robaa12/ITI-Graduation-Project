@@ -16,7 +16,6 @@ import { ChangePlanDto } from './dto/change-plan.dto';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 
 @Controller('subscriptions')
-@UseGuards(AuthGuard)
 export class BillingController {
   constructor(private readonly billingService: BillingService) {}
 
@@ -28,6 +27,7 @@ export class BillingController {
 
   /** The authenticated user's current subscription. */
   @Get('me')
+  @UseGuards(AuthGuard)
   getSubscription(@CurrentUser() user: AuthenticatedUser) {
     return this.billingService.getSubscription(user.id);
   }
@@ -35,6 +35,7 @@ export class BillingController {
   /** Starts Stripe Checkout (subscription mode) for the given plan code. */
   @Post('checkout')
   @HttpCode(201)
+  @UseGuards(AuthGuard)
   createCheckout(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: CreateCheckoutDto,
@@ -44,6 +45,7 @@ export class BillingController {
 
   /** Upgrades or downgrades the plan using Stripe's default proration. */
   @Patch('plan')
+  @UseGuards(AuthGuard)
   async changePlan(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChangePlanDto,
@@ -54,6 +56,7 @@ export class BillingController {
   /** Immediately cancels the current subscription. */
   @Post('cancel')
   @HttpCode(200)
+  @UseGuards(AuthGuard)
   async cancel(@CurrentUser() user: AuthenticatedUser) {
     return this.billingService.cancelSubscription(user.id);
   }

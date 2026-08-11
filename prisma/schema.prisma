@@ -85,6 +85,10 @@ model Plan {
   stripeProductId      String
   stripeMonthlyPriceId String?
   stripeYearlyPriceId  String?
+  // Display prices in cents (minor units) for the frontend pricing section.
+  // They mirror the Stripe Prices and are the source of truth for billing.
+  priceMonthlyCents    Int?
+  priceYearlyCents     Int?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
