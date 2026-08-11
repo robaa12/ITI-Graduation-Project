@@ -40,6 +40,7 @@ export class MastraClient {
     workflowId: MastraWorkflowId,
     runId: string,
     inputData: unknown,
+    shouldCancel?: () => Promise<boolean>,
   ): Promise<MastraWorkflowResult<TResult>> {
     this.logger.log(`Starting ${workflowId} run ${runId}`);
 
@@ -50,6 +51,15 @@ export class MastraClient {
       'POST',
       `/api/workflows/${workflowId}/create-run?runId=${encodeURIComponent(runId)}`,
     );
+
+    // A cancellation can win the database race just before Mastra creates the
+    // run. Re-check after creation so the new remote run is stopped rather than
+    // slipping through the narrow create/start gap.
+    if (await shouldCancel?.()) {
+      await this.cancelRun(workflowId, runId);
+      return { status: 'canceled' };
+    }
+
     await this.request(
       'POST',
       `/api/workflows/${workflowId}/start?runId=${encodeURIComponent(runId)}`,
@@ -90,6 +100,15 @@ export class MastraClient {
     return this.request(
       'GET',
       `/api/workflows/${workflowId}/runs/${encodeURIComponent(runId)}`,
+    );
+  }
+
+  /** Stops an active or suspended Mastra run. */
+  async cancelRun(workflowId: MastraWorkflowId, runId: string): Promise<void> {
+    this.logger.log(`Canceling ${workflowId} run ${runId}`);
+    await this.request(
+      'POST',
+      `/api/workflows/${workflowId}/runs/${encodeURIComponent(runId)}/cancel`,
     );
   }
 
@@ -226,7 +245,8 @@ export class MastraClient {
       if (
         state.status === 'success' ||
         state.status === 'failed' ||
-        state.status === 'suspended'
+        state.status === 'suspended' ||
+        state.status === 'canceled'
       ) {
         return {
           status: state.status,

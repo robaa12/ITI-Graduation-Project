@@ -59,8 +59,8 @@ export class StrategyProcessor extends WorkerHost {
       return;
     }
 
-    await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
+    const claimed = await this.prisma.marketingStrategy.updateMany({
+      where: { id: strategyId, status: WorkflowRunStatus.PENDING },
       data: { status: WorkflowRunStatus.RUNNING },
     });
     await this.accounting
@@ -70,6 +70,13 @@ export class StrategyProcessor extends WorkerHost {
           `Could not mark accounting for ${strategy.runId} as running: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+
+    if (claimed.count === 0) {
+      this.logger.log(
+        `Strategy ${strategyId} is no longer pending; dropping queued job`,
+      );
+      return;
+    }
 
     const { resume } = job.data;
 
@@ -110,6 +117,7 @@ export class StrategyProcessor extends WorkerHost {
                   ? { brandProfile: strategy.campaign.project.brandProfile }
                   : {}),
               },
+          () => this.isCanceled(strategyId),
         );
 
     const status = toWorkflowRunStatus(result);
@@ -118,7 +126,7 @@ export class StrategyProcessor extends WorkerHost {
     // deleted while it is in flight. `update` throws on a missing row, which
     // would turn a completed run into a spurious job failure.
     const { count } = await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
+      where: { id: strategyId, status: WorkflowRunStatus.RUNNING },
       data: {
         status,
         output:
@@ -141,7 +149,7 @@ export class StrategyProcessor extends WorkerHost {
 
     if (count === 0) {
       this.logger.warn(
-        `Strategy ${strategyId} was deleted while run ${strategy.runId} was in flight; discarding the ${status} result`,
+        `Strategy ${strategyId} was deleted or canceled while run ${strategy.runId} was in flight; discarding the ${status} result`,
       );
       return;
     }
@@ -191,7 +199,10 @@ export class StrategyProcessor extends WorkerHost {
     // updateMany rather than update: the row may have been deleted, and a
     // second throw inside the failure handler would be silently swallowed.
     const { count } = await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
+      where: {
+        id: strategyId,
+        status: { in: [WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING] },
+      },
       data: {
         status: WorkflowRunStatus.FAILED,
         pendingRevision: Prisma.DbNull,
@@ -209,5 +220,12 @@ export class StrategyProcessor extends WorkerHost {
         .catch(() => undefined);
       await this.accounting.collectOrSchedule(strategy.runId);
     }
+  }
+
+  private async isCanceled(strategyId: string): Promise<boolean> {
+    const count = await this.prisma.marketingStrategy.count({
+      where: { id: strategyId, status: WorkflowRunStatus.CANCELED },
+    });
+    return count > 0;
   }
 }

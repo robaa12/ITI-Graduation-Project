@@ -83,6 +83,16 @@ export class ContentRunController {
     return this.service.findOne(user.id, id);
   }
 
+  /** Stops a queued, running, or suspended content run. */
+  @Post(':id/cancel')
+  @HttpCode(200)
+  cancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.service.cancel(user.id, id);
+  }
+
   /**
    * Approves or answers a suspension raised by `requireApproval`, putting the
    * run back on the queue. Body: `{ step?, resumeData }`.

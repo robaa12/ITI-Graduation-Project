@@ -60,8 +60,8 @@ export class ContentWorkflowProcessor extends WorkerHost {
       return;
     }
 
-    await this.prisma.campaignContentRun.updateMany({
-      where: { id: contentRunId },
+    const claimed = await this.prisma.campaignContentRun.updateMany({
+      where: { id: contentRunId, status: WorkflowRunStatus.PENDING },
       data: { status: WorkflowRunStatus.RUNNING },
     });
     await this.accounting
@@ -71,6 +71,13 @@ export class ContentWorkflowProcessor extends WorkerHost {
           `Could not mark accounting for ${run.runId} as running: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+
+    if (claimed.count === 0) {
+      this.logger.log(
+        `Content run ${contentRunId} is no longer pending; dropping queued job`,
+      );
+      return;
+    }
 
     const { resume } = job.data;
 
@@ -89,16 +96,21 @@ export class ContentWorkflowProcessor extends WorkerHost {
           resume.step,
           resume.resumeData,
         )
-      : await this.mastra.startRun(MASTRA_WORKFLOWS.content, run.runId, {
-          ...(run.input as Record<string, unknown>),
-          knowledgeScope: {
-            projectId: run.campaign.projectId,
-            sourceIds: readySources.map((source) => source.id),
+      : await this.mastra.startRun(
+          MASTRA_WORKFLOWS.content,
+          run.runId,
+          {
+            ...(run.input as Record<string, unknown>),
+            knowledgeScope: {
+              projectId: run.campaign.projectId,
+              sourceIds: readySources.map((source) => source.id),
+            },
+            ...(run.campaign.project.brandProfile
+              ? { brandProfile: run.campaign.project.brandProfile }
+              : {}),
           },
-          ...(run.campaign.project.brandProfile
-            ? { brandProfile: run.campaign.project.brandProfile }
-            : {}),
-        });
+          () => this.isCanceled(contentRunId),
+        );
 
     const status = toWorkflowRunStatus(result);
 
@@ -112,9 +124,12 @@ export class ContentWorkflowProcessor extends WorkerHost {
     // exist. Either both land or neither does.
     let written: number;
     try {
-      const [updated] = await this.prisma.$transaction([
-        this.prisma.campaignContentRun.updateMany({
-          where: { id: contentRunId },
+      written = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.campaignContentRun.updateMany({
+          where: {
+            id: contentRunId,
+            status: WorkflowRunStatus.RUNNING,
+          },
           data: {
             status,
             output:
@@ -133,10 +148,13 @@ export class ContentWorkflowProcessor extends WorkerHost {
                 : null,
             contentCount: rows.length,
           },
-        }),
-        this.prisma.generatedContent.createMany({ data: rows }),
-      ]);
-      written = updated.count;
+        });
+        if (updated.count === 0) return 0;
+        if (rows.length > 0) {
+          await tx.generatedContent.createMany({ data: rows });
+        }
+        return updated.count;
+      });
     } catch (error) {
       // A run takes minutes, so the campaign can be deleted underneath it. The
       // fan-out's foreign keys then fail before the count check below ever runs,
@@ -149,7 +167,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
 
     if (written === 0) {
       this.logger.warn(
-        `Content run ${contentRunId} was deleted while run ${run.runId} was in flight; discarding the ${status} result`,
+        `Content run ${contentRunId} was deleted or canceled while run ${run.runId} was in flight; discarding the ${status} result`,
       );
       return;
     }
@@ -201,7 +219,10 @@ export class ContentWorkflowProcessor extends WorkerHost {
       select: { runId: true },
     });
     const { count } = await this.prisma.campaignContentRun.updateMany({
-      where: { id: contentRunId },
+      where: {
+        id: contentRunId,
+        status: { in: [WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING] },
+      },
       data: { status: WorkflowRunStatus.FAILED, error: message },
     });
 
@@ -215,5 +236,12 @@ export class ContentWorkflowProcessor extends WorkerHost {
         .catch(() => undefined);
       await this.accounting.collectOrSchedule(run.runId);
     }
+  }
+
+  private async isCanceled(contentRunId: string): Promise<boolean> {
+    const count = await this.prisma.campaignContentRun.count({
+      where: { id: contentRunId, status: WorkflowRunStatus.CANCELED },
+    });
+    return count > 0;
   }
 }

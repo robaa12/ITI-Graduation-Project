@@ -15,12 +15,14 @@ import { CampaignsService } from '../campaigns/campaigns.service';
 import { ProjectsService } from '../projects/projects.service';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 
-type HistoryStatus = 'running' | 'success' | 'failed' | 'suspended';
+type HistoryStatus =
+  'running' | 'success' | 'failed' | 'suspended' | 'canceled';
 
 function toHistoryStatus(status: WorkflowRunStatus): HistoryStatus {
   if (status === WorkflowRunStatus.READY) return 'success';
   if (status === WorkflowRunStatus.FAILED) return 'failed';
   if (status === WorkflowRunStatus.SUSPENDED) return 'suspended';
+  if (status === WorkflowRunStatus.CANCELED) return 'canceled';
   return 'running';
 }
 

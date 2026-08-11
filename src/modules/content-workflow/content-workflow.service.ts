@@ -22,14 +22,16 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { parseResumeRequest } from '../mastra/resume-request';
+import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
+import { parseResumeRequest } from '../mastra/resume-request';
 import { StrategyService } from '../strategy/strategy.service';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
 } from './content-workflow.queue';
+import { validateContentWorkflowInput } from './content-workflow-input.validator';
 import { QueryContentRunDto } from './dto/query-content-run.dto';
 
 const MAX_INPUT_BYTES = 256 * 1024;
@@ -44,6 +46,7 @@ export class ContentWorkflowService {
     private readonly strategyService: StrategyService,
     @InjectQueue(CONTENT_WORKFLOW_QUEUE)
     private readonly queue: Queue<ContentWorkflowJob>,
+    private readonly mastra: MastraClient,
   ) {}
 
   /**
@@ -70,6 +73,8 @@ export class ContentWorkflowService {
       campaignId,
       body,
     );
+
+    validateContentWorkflowInput(input);
 
     if (jsonByteLength(input) > MAX_INPUT_BYTES) {
       throw new BadRequestException(
@@ -317,6 +322,55 @@ export class ContentWorkflowService {
       orderBy: { createdAt: 'asc' },
     });
     return { ...run, ...presentWorkflowAccounting(executions) };
+  }
+
+  async cancel(userId: string, id: string): Promise<CampaignContentRun> {
+    const run = await this.findOwnedOrFail(userId, id);
+
+    if (run.status === WorkflowRunStatus.CANCELED) {
+      return run;
+    }
+
+    const cancellable: WorkflowRunStatus[] = [
+      WorkflowRunStatus.PENDING,
+      WorkflowRunStatus.RUNNING,
+      WorkflowRunStatus.SUSPENDED,
+    ];
+    if (!cancellable.includes(run.status)) {
+      throw new ConflictException(
+        `Content run ${id} is ${run.status}; only an active run can be canceled`,
+      );
+    }
+
+    const { count } = await this.prisma.campaignContentRun.updateMany({
+      where: { id, status: { in: cancellable } },
+      data: {
+        status: WorkflowRunStatus.CANCELED,
+        error: null,
+        suspendPayload: Prisma.DbNull,
+      },
+    });
+
+    if (count === 0) {
+      const current = await this.findOwnedOrFail(userId, id);
+      if (current.status === WorkflowRunStatus.CANCELED) return current;
+      throw new ConflictException(
+        `Content run ${id} finished before it could be canceled`,
+      );
+    }
+
+    if (run.runId && run.status !== WorkflowRunStatus.PENDING) {
+      try {
+        await this.mastra.cancelRun(MASTRA_WORKFLOWS.content, run.runId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Content run ${id} was canceled locally but Mastra run ${run.runId} could not be stopped immediately: ${message}`,
+        );
+      }
+    }
+
+    return this.findOwnedOrFail(userId, id);
   }
 
   async findOwnedOrFail(

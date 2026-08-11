@@ -22,8 +22,9 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
-import { parseResumeRequest } from '../mastra/resume-request';
+import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
+import { parseResumeRequest } from '../mastra/resume-request';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
 import { ReviewStrategyDto } from './dto/review-strategy.dto';
@@ -51,6 +52,7 @@ export class StrategyService {
     private readonly campaignsService: CampaignsService,
     @InjectQueue(STRATEGY_QUEUE)
     private readonly queue: Queue<StrategyJob>,
+    private readonly mastra: MastraClient,
   ) {}
 
   /**
@@ -436,6 +438,62 @@ export class StrategyService {
     }
 
     return this.findOwnedOrFail(user.id, id);
+  }
+
+  /**
+   * Claims cancellation in Postgres before asking Mastra to stop. Workers only
+   * write results while a row is RUNNING, so a late completion cannot bring a
+   * canceled run back to life.
+   */
+  async cancel(userId: string, id: string): Promise<MarketingStrategy> {
+    const strategy = await this.findOwnedOrFail(userId, id);
+
+    if (strategy.status === WorkflowRunStatus.CANCELED) {
+      return strategy;
+    }
+
+    const cancellable: WorkflowRunStatus[] = [
+      WorkflowRunStatus.PENDING,
+      WorkflowRunStatus.RUNNING,
+      WorkflowRunStatus.SUSPENDED,
+    ];
+    if (!cancellable.includes(strategy.status)) {
+      throw new ConflictException(
+        `Strategy ${id} is ${strategy.status}; only an active run can be canceled`,
+      );
+    }
+
+    const { count } = await this.prisma.marketingStrategy.updateMany({
+      where: { id, status: { in: cancellable } },
+      data: {
+        status: WorkflowRunStatus.CANCELED,
+        error: null,
+        suspendPayload: Prisma.DbNull,
+      },
+    });
+
+    if (count === 0) {
+      const current = await this.findOwnedOrFail(userId, id);
+      if (current.status === WorkflowRunStatus.CANCELED) return current;
+      throw new ConflictException(
+        `Strategy ${id} finished before it could be canceled`,
+      );
+    }
+
+    if (strategy.runId && strategy.status !== WorkflowRunStatus.PENDING) {
+      try {
+        await this.mastra.cancelRun(MASTRA_WORKFLOWS.strategy, strategy.runId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // The durable CANCELED claim still prevents the worker from publishing
+        // a result. This is especially important when Mastra is restarting.
+        this.logger.warn(
+          `Strategy ${id} was canceled locally but Mastra run ${strategy.runId} could not be stopped immediately: ${message}`,
+        );
+      }
+    }
+
+    return this.findOwnedOrFail(userId, id);
   }
 
   /** Ownership reaches through campaign → project → user, same as content. */

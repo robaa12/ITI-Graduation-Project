@@ -1,0 +1,1 @@
+ALTER TYPE "WorkflowRunStatus" ADD VALUE 'CANCELED';

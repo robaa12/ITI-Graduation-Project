@@ -191,6 +191,7 @@ enum WorkflowRunStatus {
   PENDING
   RUNNING
   SUSPENDED
+  CANCELED
   READY
   FAILED
 }

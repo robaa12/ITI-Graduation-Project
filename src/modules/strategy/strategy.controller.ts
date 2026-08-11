@@ -95,6 +95,35 @@ export class StrategyController {
     return this.strategyService.findOne(user.id, id);
   }
 
+  /** Stops a queued, running, or suspended strategy run. */
+  @Post(':id/cancel')
+  @HttpCode(200)
+  cancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.strategyService.cancel(user.id, id);
+  }
+
+  /** Records a human approval decision and, when supplied, the edited plan. */
+  @Post(':id/review')
+  review(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReviewStrategyDto,
+  ) {
+    return this.strategyService.review(user, id, dto);
+  }
+
+  /** Returns the immutable review trail, newest decision first. */
+  @Get(':id/reviews')
+  reviews(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.strategyService.listReviews(user.id, id);
+  }
+
   /**
    * Answers a suspension and puts the run back on the queue. 202 for the same
    * reason as starting one: the remaining steps still take minutes.
@@ -110,23 +139,6 @@ export class StrategyController {
     @Body() body: Record<string, unknown>,
   ) {
     return this.strategyService.resume(user.id, id, body);
-  }
-
-  @Post(':id/review')
-  review(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: ReviewStrategyDto,
-  ) {
-    return this.strategyService.review(user, id, dto);
-  }
-
-  @Get(':id/reviews')
-  reviews(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('id', ParseUUIDPipe) id: string,
-  ) {
-    return this.strategyService.listReviews(user.id, id);
   }
 
   @Post(':id/sections/regenerate')
