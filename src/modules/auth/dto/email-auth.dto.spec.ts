@@ -1,5 +1,8 @@
 import {
   validateChangePasswordDto,
+  validatePasswordResetOtpCheckDto,
+  validatePasswordResetRequestDto,
+  validatePasswordResetWithOtpDto,
   validateSignInEmailDto,
   validateSignUpEmailDto,
   validateUpdateUserDto,
@@ -53,5 +56,49 @@ describe('email auth DTO validation', () => {
     expect(validateUpdateUserDto({ name: '  Alex Rivera  ' })).toEqual({
       name: 'Alex Rivera',
     });
+  });
+
+  it('normalizes password reset emails without exposing account state', () => {
+    expect(
+      validatePasswordResetRequestDto({ email: '  Alex@Example.COM  ' }),
+    ).toEqual({ email: 'alex@example.com' });
+  });
+
+  it('accepts a six-digit password reset OTP check', () => {
+    expect(
+      validatePasswordResetOtpCheckDto({
+        email: 'Alex@Example.COM',
+        otp: '123456',
+        type: 'forget-password',
+      }),
+    ).toEqual({
+      email: 'alex@example.com',
+      otp: '123456',
+      type: 'forget-password',
+    });
+  });
+
+  it('validates the new password and OTP together', () => {
+    expect(
+      validatePasswordResetWithOtpDto({
+        email: 'alex@example.com',
+        otp: '123456',
+        password: 'new-password456',
+      }),
+    ).toEqual({
+      email: 'alex@example.com',
+      otp: '123456',
+      password: 'new-password456',
+    });
+  });
+
+  it('rejects malformed password reset codes', () => {
+    expect(() =>
+      validatePasswordResetWithOtpDto({
+        email: 'alex@example.com',
+        otp: '12a456',
+        password: 'new-password456',
+      }),
+    ).toThrow('otp must be a 6-digit code');
   });
 });

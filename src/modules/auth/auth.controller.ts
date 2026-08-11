@@ -12,6 +12,9 @@ import type { Request, Response } from 'express';
 
 import {
   validateChangePasswordDto,
+  validatePasswordResetOtpCheckDto,
+  validatePasswordResetRequestDto,
+  validatePasswordResetWithOtpDto,
   validateSignInEmailDto,
   validateSignUpEmailDto,
   validateUpdateUserDto,
@@ -101,6 +104,39 @@ export class AuthController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    await this.authService.handle(req, res);
+  }
+
+  @Post('email-otp/request-password-reset')
+  @HttpCode(200)
+  async requestPasswordResetOtp(
+    @Body() body: unknown,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    req.body = validatePasswordResetRequestDto(body);
+    await this.authService.handle(req, res);
+  }
+
+  @Post('email-otp/check-verification-otp')
+  @HttpCode(200)
+  async checkPasswordResetOtp(
+    @Body() body: unknown,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    req.body = validatePasswordResetOtpCheckDto(body);
+    await this.authService.handle(req, res);
+  }
+
+  @Post('email-otp/reset-password')
+  @HttpCode(200)
+  async resetPasswordWithOtp(
+    @Body() body: unknown,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    req.body = validatePasswordResetWithOtpDto(body);
     await this.authService.handle(req, res);
   }
 
