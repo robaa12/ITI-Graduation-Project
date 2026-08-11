@@ -18,6 +18,7 @@ import { StrategyModule } from './modules/strategy/strategy.module';
 import { ContentWorkflowModule } from './modules/content-workflow/content-workflow.module';
 import { HistoryModule } from './modules/history/history.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
+import { SocialModule } from './modules/social/social.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
     ContentWorkflowModule,
     HistoryModule,
     KnowledgeModule,
+    SocialModule,
   ],
   controllers: [AppController],
   providers: [AppService],

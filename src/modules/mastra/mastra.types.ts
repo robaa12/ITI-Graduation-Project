@@ -5,6 +5,7 @@
  */
 export const MASTRA_WORKFLOWS = {
   strategy: 'marketingStrategyWorkflow',
+  strategySectionRevision: 'strategySectionRevisionWorkflow',
   content: 'contentCreationWorkflow',
 } as const;
 
@@ -29,6 +30,24 @@ export interface MastraWorkflowResult<TResult = unknown> {
   suspended?: unknown;
   /** Per-step payloads. Useful for surfacing progress and for debugging. */
   steps?: Record<string, unknown>;
+}
+
+export interface MastraWorkflowUsage {
+  status: 'ready' | 'pending' | 'unpriced';
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCost: number | null;
+  costUnit: string | null;
+  models: Array<{
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    estimatedCost: number | null;
+    costUnit: string | null;
+  }>;
 }
 
 /**

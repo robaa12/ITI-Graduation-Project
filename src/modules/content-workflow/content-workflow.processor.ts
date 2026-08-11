@@ -1,12 +1,17 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { KnowledgeSourceStatus, Prisma, WorkflowRunStatus } from '@prisma/client';
+import {
+  KnowledgeSourceStatus,
+  Prisma,
+  WorkflowRunStatus,
+} from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { toErrorMessage, toWorkflowRunStatus } from '../mastra/run-status';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { toGeneratedContentRows } from './calendar-fanout';
 import {
   CONTENT_WORKFLOW_QUEUE,
@@ -20,6 +25,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mastra: MastraClient,
+    private readonly accounting: WorkflowAccountingService,
   ) {
     super();
   }
@@ -29,7 +35,14 @@ export class ContentWorkflowProcessor extends WorkerHost {
 
     const run = await this.prisma.campaignContentRun.findUnique({
       where: { id: contentRunId },
-      include: { campaign: { select: { projectId: true, project: { select: { brandProfile: true } } } } },
+      include: {
+        campaign: {
+          select: {
+            projectId: true,
+            project: { select: { brandProfile: true } },
+          },
+        },
+      },
     });
 
     if (!run) {
@@ -51,11 +64,21 @@ export class ContentWorkflowProcessor extends WorkerHost {
       where: { id: contentRunId },
       data: { status: WorkflowRunStatus.RUNNING },
     });
+    await this.accounting
+      .markRunning(run.runId)
+      .catch((error) =>
+        this.logger.warn(
+          `Could not mark accounting for ${run.runId} as running: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
 
     const { resume } = job.data;
 
     const readySources = await this.prisma.knowledgeSource.findMany({
-      where: { projectId: run.campaign.projectId, status: KnowledgeSourceStatus.READY },
+      where: {
+        projectId: run.campaign.projectId,
+        status: KnowledgeSourceStatus.READY,
+      },
       select: { id: true },
     });
 
@@ -66,20 +89,16 @@ export class ContentWorkflowProcessor extends WorkerHost {
           resume.step,
           resume.resumeData,
         )
-      : await this.mastra.startRun(
-          MASTRA_WORKFLOWS.content,
-          run.runId,
-          {
-            ...(run.input as Record<string, unknown>),
-            knowledgeScope: {
-              projectId: run.campaign.projectId,
-              sourceIds: readySources.map((source) => source.id),
-            },
-            ...(run.campaign.project.brandProfile
-              ? { brandProfile: run.campaign.project.brandProfile }
-              : {}),
+      : await this.mastra.startRun(MASTRA_WORKFLOWS.content, run.runId, {
+          ...(run.input as Record<string, unknown>),
+          knowledgeScope: {
+            projectId: run.campaign.projectId,
+            sourceIds: readySources.map((source) => source.id),
           },
-        );
+          ...(run.campaign.project.brandProfile
+            ? { brandProfile: run.campaign.project.brandProfile }
+            : {}),
+        });
 
     const status = toWorkflowRunStatus(result);
 
@@ -135,6 +154,15 @@ export class ContentWorkflowProcessor extends WorkerHost {
       return;
     }
 
+    await this.accounting
+      .markTerminal(run.runId, status)
+      .catch((error) =>
+        this.logger.warn(
+          `Could not mark accounting for ${run.runId} as ${status}: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    await this.accounting.collectOrSchedule(run.runId);
+
     this.logger.log(
       `Content run ${contentRunId} finished as ${status}` +
         (rows.length ? ` with ${rows.length} content rows` : ''),
@@ -168,6 +196,10 @@ export class ContentWorkflowProcessor extends WorkerHost {
   }
 
   private async fail(contentRunId: string, message: string): Promise<void> {
+    const run = await this.prisma.campaignContentRun.findUnique({
+      where: { id: contentRunId },
+      select: { runId: true },
+    });
     const { count } = await this.prisma.campaignContentRun.updateMany({
       where: { id: contentRunId },
       data: { status: WorkflowRunStatus.FAILED, error: message },
@@ -175,6 +207,13 @@ export class ContentWorkflowProcessor extends WorkerHost {
 
     if (count === 0) {
       this.logger.warn(`Could not mark content run ${contentRunId} as FAILED`);
+      return;
+    }
+    if (run?.runId) {
+      await this.accounting
+        .markTerminal(run.runId, WorkflowRunStatus.FAILED)
+        .catch(() => undefined);
+      await this.accounting.collectOrSchedule(run.runId);
     }
   }
 }
