@@ -25,7 +25,7 @@ test('content runs create platform-aware calendar entries', () => {
   const engine = new WorkflowEngine()
   engine.createRun('contentCreationWorkflow', 'content-run')
   const run = engine.startRun('contentCreationWorkflow', 'content-run', {
-    brandName: 'AetherFlow',
+    brandName: 'Sada صدي',
     product: 'Campaign workflow platform',
     targetAudience: 'marketing leaders',
     platforms: ['linkedin', 'instagram'],

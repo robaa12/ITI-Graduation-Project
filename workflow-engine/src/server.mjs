@@ -63,5 +63,5 @@ const server = http.createServer(async (request, response) => {
 })
 
 server.listen(port, () => {
-  console.log(`AetherFlow workflow engine listening on http://localhost:${port}`)
+  console.log(`Sada صدي workflow engine listening on http://localhost:${port}`)
 })

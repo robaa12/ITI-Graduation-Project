@@ -11,8 +11,10 @@ import {
 import type { Request, Response } from 'express';
 
 import {
+  validateChangePasswordDto,
   validateSignInEmailDto,
   validateSignUpEmailDto,
+  validateUpdateUserDto,
 } from './dto/email-auth.dto';
 import { AuthService } from './auth.service';
 
@@ -56,6 +58,28 @@ export class AuthController {
   @Post('sign-out')
   @HttpCode(200)
   async signOut(@Req() req: Request, @Res() res: Response): Promise<void> {
+    await this.authService.handle(req, res);
+  }
+
+  @Post('change-password')
+  @HttpCode(200)
+  async changePassword(
+    @Body() body: unknown,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    req.body = validateChangePasswordDto(body);
+    await this.authService.handle(req, res);
+  }
+
+  @Post('update-user')
+  @HttpCode(200)
+  async updateUser(
+    @Body() body: unknown,
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
+    req.body = validateUpdateUserDto(body);
     await this.authService.handle(req, res);
   }
 

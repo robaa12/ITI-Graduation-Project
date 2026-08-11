@@ -16,6 +16,16 @@ export interface SignInEmailDto {
   rememberMe?: boolean;
 }
 
+export interface ChangePasswordDto {
+  currentPassword: string;
+  newPassword: string;
+  revokeOtherSessions?: boolean;
+}
+
+export interface UpdateUserDto {
+  name: string;
+}
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function validateSignUpEmailDto(body: unknown): SignUpEmailDto {
@@ -49,6 +59,40 @@ export function validateSignInEmailDto(body: unknown): SignInEmailDto {
   } as SignInEmailDto;
 }
 
+export function validateChangePasswordDto(body: unknown): ChangePasswordDto {
+  const dto = assertObject(body);
+
+  assertPassword(dto.currentPassword, 'currentPassword');
+  assertPassword(dto.newPassword, 'newPassword');
+  assertOptionalBoolean(dto.revokeOtherSessions, 'revokeOtherSessions');
+
+  if (dto.currentPassword === dto.newPassword) {
+    throw new BadRequestException(
+      'newPassword must be different from currentPassword',
+    );
+  }
+
+  return {
+    currentPassword: dto.currentPassword,
+    newPassword: dto.newPassword,
+    ...(dto.revokeOtherSessions === undefined
+      ? {}
+      : { revokeOtherSessions: dto.revokeOtherSessions }),
+  };
+}
+
+export function validateUpdateUserDto(body: unknown): UpdateUserDto {
+  const dto = assertObject(body);
+
+  assertString(dto.name, 'name');
+  const name = dto.name.trim();
+  if (name.length > 100) {
+    throw new BadRequestException('name must be at most 100 characters');
+  }
+
+  return { name };
+}
+
 function assertObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('Request body must be a JSON object');
@@ -71,15 +115,18 @@ function assertEmail(value: unknown): asserts value is string {
   }
 }
 
-function assertPassword(value: unknown): asserts value is string {
-  assertString(value, 'password');
+function assertPassword(
+  value: unknown,
+  field = 'password',
+): asserts value is string {
+  assertString(value, field);
 
   if (value.length < 8) {
-    throw new BadRequestException('password must be at least 8 characters');
+    throw new BadRequestException(`${field} must be at least 8 characters`);
   }
 
   if (value.length > 128) {
-    throw new BadRequestException('password must be at most 128 characters');
+    throw new BadRequestException(`${field} must be at most 128 characters`);
   }
 }
 
@@ -89,7 +136,10 @@ function assertOptionalString(value: unknown, field: string): void {
   }
 }
 
-function assertOptionalBoolean(value: unknown, field: string): void {
+function assertOptionalBoolean(
+  value: unknown,
+  field: string,
+): asserts value is boolean | undefined {
   if (value !== undefined && typeof value !== 'boolean') {
     throw new BadRequestException(`${field} must be a boolean`);
   }

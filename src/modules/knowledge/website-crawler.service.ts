@@ -126,7 +126,7 @@ export class WebsiteCrawlerService {
     return url.hostname === host
       && ['http:', 'https:'].includes(url.protocol)
       && !SKIPPED_PATH.test(url.pathname)
-      && robots.isAllowed(url.toString(), 'AetherFlowKnowledgeBot') !== false;
+      && robots.isAllowed(url.toString(), 'SadaKnowledgeBot') !== false;
   }
 
   private canonicalUrl(rawUrl: string) {
