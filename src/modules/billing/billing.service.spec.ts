@@ -28,7 +28,7 @@ describe('BillingService', () => {
     };
   };
   let stripe: {
-    checkout: { sessions: { create: jest.Mock } };
+    checkout: { sessions: { create: jest.Mock; retrieve: jest.Mock } };
     customers: { create: jest.Mock };
     invoices: { retrieve: jest.Mock };
     subscriptions: {
@@ -54,7 +54,7 @@ describe('BillingService', () => {
     };
 
     stripe = {
-      checkout: { sessions: { create: jest.fn() } },
+      checkout: { sessions: { create: jest.fn(), retrieve: jest.fn() } },
       customers: { create: jest.fn() },
       invoices: { retrieve: jest.fn() },
       subscriptions: {
@@ -158,12 +158,14 @@ describe('BillingService', () => {
             metadata: { userId: 'user-1', planCode: 'pro', interval: 'month' },
           },
         }),
+        { idempotencyKey: 'checkout:user-1:initial' },
       );
       expect(stripe.customers.create).toHaveBeenCalledWith(
         expect.objectContaining({
           email: USER.email,
           metadata: { userId: 'user-1' },
         }),
+        { idempotencyKey: 'billing-customer:user-1' },
       );
       expect(prisma.subscription.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
@@ -193,7 +195,59 @@ describe('BillingService', () => {
       expect(stripe.customers.create).not.toHaveBeenCalled();
       expect(stripe.checkout.sessions.create).toHaveBeenCalledWith(
         expect.objectContaining({ customer: 'cus_existing' }),
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
       );
+    });
+
+    it('reuses an open Checkout Session for the same plan and interval', async () => {
+      prisma.plan.findFirst.mockResolvedValue(PLAN);
+      prisma.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-1',
+        billingInterval: BillingInterval.MONTHLY,
+        checkoutSessionId: 'cs_pending',
+        stripeSubscriptionId: null,
+        status: SubscriptionStatus.INCOMPLETE,
+      });
+      stripe.checkout.sessions.retrieve.mockResolvedValue({
+        id: 'cs_pending',
+        status: 'open',
+        url: 'https://checkout.stripe.com/pending',
+      });
+
+      await expect(
+        service.createCheckoutSession('user-1', {
+          planCode: 'pro',
+          interval: 'month',
+        }),
+      ).resolves.toEqual({ url: 'https://checkout.stripe.com/pending' });
+
+      expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(stripe.customers.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a second plan while another Checkout Session is open', async () => {
+      prisma.plan.findFirst.mockResolvedValue(PLAN);
+      prisma.subscription.findUnique.mockResolvedValue({
+        planId: 'another-plan',
+        billingInterval: BillingInterval.YEARLY,
+        checkoutSessionId: 'cs_pending',
+        stripeSubscriptionId: null,
+        status: SubscriptionStatus.INCOMPLETE,
+      });
+      stripe.checkout.sessions.retrieve.mockResolvedValue({
+        id: 'cs_pending',
+        status: 'open',
+        url: 'https://checkout.stripe.com/pending',
+      });
+
+      await expect(
+        service.createCheckoutSession('user-1', {
+          planCode: 'pro',
+          interval: 'month',
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
 
     it('rejects an unknown plan', async () => {
@@ -316,6 +370,10 @@ describe('BillingService', () => {
         status: 'active',
         items: { data: [{ price: { id: 'price_pro_monthly' } }] },
         latest_invoice: 'inv_123',
+        pending_update: {
+          expires_at: 1_800_000_000,
+          subscription_items: [],
+        },
       });
       stripe.invoices.retrieve.mockResolvedValue({
         id: 'inv_123',
@@ -334,19 +392,42 @@ describe('BillingService', () => {
         expect.objectContaining({
           items: [{ id: 'si_current', price: 'price_pro_monthly' }],
           proration_behavior: 'always_invoice',
-          payment_behavior: 'default_incomplete',
+          payment_behavior: 'pending_if_incomplete',
         }),
+        {
+          idempotencyKey: 'change-plan:sub_live:price_basic:price_pro_monthly',
+        },
       );
       expect(stripe.invoices.retrieve).toHaveBeenCalledWith('inv_123');
       expect(result).toEqual({ url: 'https://pay.stripe.com/inv_123' });
-      expect(prisma.subscription.update).toHaveBeenCalledWith({
-        where: { userId: 'user-1' },
-        data: expect.objectContaining({
-          planId: 'plan-2',
-          billingInterval: BillingInterval.MONTHLY,
-          stripePriceId: 'price_pro_monthly',
-        }),
+      expect(prisma.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('does not apply the plan when a pending update invoice cannot be retrieved', async () => {
+      prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
+      prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        items: { data: [CURRENT_ITEM] },
       });
+      stripe.subscriptions.update.mockResolvedValue({
+        status: 'active',
+        items: { data: [CURRENT_ITEM] },
+        latest_invoice: 'inv_unavailable',
+        pending_update: {
+          expires_at: 1_800_000_000,
+          subscription_items: [],
+        },
+      });
+      stripe.invoices.retrieve.mockRejectedValue(new Error('stripe timeout'));
+
+      await expect(
+        service.changePlan('user-1', {
+          planCode: 'pro',
+          interval: 'month',
+        }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      expect(prisma.subscription.update).not.toHaveBeenCalled();
     });
 
     it('applies a payment-free switch with a null url (downgrade credit)', async () => {
@@ -373,6 +454,14 @@ describe('BillingService', () => {
       });
 
       expect(result).toEqual({ url: null });
+      expect(prisma.subscription.update).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        data: expect.objectContaining({
+          planId: 'plan-2',
+          billingInterval: BillingInterval.MONTHLY,
+          stripePriceId: 'price_pro_monthly',
+        }),
+      });
     });
 
     it('supports downgrade without a client-supplied price', async () => {

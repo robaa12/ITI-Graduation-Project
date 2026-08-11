@@ -43,7 +43,7 @@ export class BillingController {
     return this.billingService.createCheckoutSession(user.id, dto);
   }
 
-  /** Upgrades or downgrades the plan using Stripe's default proration. */
+  /** Upgrades or downgrades with immediate invoicing and pending payment. */
   @Patch('plan')
   @UseGuards(AuthGuard)
   async changePlan(

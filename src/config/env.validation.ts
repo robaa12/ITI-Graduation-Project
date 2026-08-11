@@ -18,13 +18,19 @@ export const validationSchema = Joi.object({
   DATABASE_URL: Joi.string().required(),
 
   MASTRA_BASE_URL: Joi.string().uri().required(),
-  MASTRA_TIMEOUT_MS: Joi.number().default(600000),
+  MASTRA_TIMEOUT_MS: Joi.number().default(900000),
   RAG_ENABLED: Joi.boolean().default(false),
-  MASTRA_INTERNAL_TOKEN: Joi.string().min(24).when('RAG_ENABLED', {
-    is: true,
-    then: Joi.required(),
-    otherwise: Joi.optional(),
-  }),
+  MASTRA_INTERNAL_TOKEN: Joi.string().min(24).required(),
+
+  META_APP_ID: Joi.string().optional(),
+  META_APP_SECRET: Joi.string().optional(),
+  META_LOGIN_CONFIG_ID: Joi.string().optional(),
+  META_REDIRECT_URI: Joi.string().uri().optional(),
+  META_FRONTEND_REDIRECT_URL: Joi.string().uri().optional(),
+  META_GRAPH_API_VERSION: Joi.string()
+    .pattern(/^v\d+\.\d+$/)
+    .default('v25.0'),
+  META_TOKEN_ENCRYPTION_KEY: Joi.string().optional(),
 
   REDIS_HOST: Joi.string().required(),
   REDIS_PORT: Joi.number().default(6379),

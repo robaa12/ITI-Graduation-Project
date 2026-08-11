@@ -86,10 +86,17 @@ export class StripeWebhookService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        this.logger.debug(
-          `Suppressing concurrent duplicate webhook event ${event.id}`,
-        );
-        return;
+        const duplicateEvent = await this.prisma.subscriptionEvent.findUnique({
+          where: { stripeEventId: event.id },
+          select: { id: true },
+        });
+
+        if (duplicateEvent) {
+          this.logger.debug(
+            `Suppressing concurrent duplicate webhook event ${event.id}`,
+          );
+          return;
+        }
       }
 
       throw error;
@@ -238,6 +245,7 @@ export class StripeWebhookService {
       update: {
         planId: planId ?? undefined,
         stripeCustomerId: customerId(sub),
+        stripeSubscriptionId: sub.id,
         stripePriceId: price?.id,
         billingInterval: interval,
         status: mapSubscriptionStatus(sub.status),
@@ -299,9 +307,16 @@ export class StripeWebhookService {
       return;
     }
 
+    const price = subscription.items?.data?.[0]?.price;
+    const planId = await this.resolvePlanIdForPrice(tx, price?.id);
+
     await tx.subscription.update({
       where: { userId },
       data: {
+        planId: planId ?? undefined,
+        stripeSubscriptionId: subscription.id,
+        stripePriceId: price?.id,
+        billingInterval: this.intervalFromPrice(price),
         status: mapSubscriptionStatus(subscription.status),
         currentPeriodStart: currentPeriodStart(subscription),
         currentPeriodEnd: currentPeriodEnd(subscription),
@@ -318,6 +333,19 @@ export class StripeWebhookService {
     event: Stripe.Event,
   ): Promise<void> {
     const invoice = event.data.object as Stripe.Invoice;
+    if (invoice.billing_reason !== 'subscription_cycle') {
+      this.logger.debug(`Ignoring non-renewal failed invoice ${invoice.id}`);
+      return;
+    }
+
+    const failedSubscriptionId = invoiceSubscriptionId(invoice);
+    if (!failedSubscriptionId) {
+      this.logger.warn(
+        `Renewal invoice ${invoice.id} has no Stripe subscription id`,
+      );
+      return;
+    }
+
     const userId = await this.resolveUserIdForCustomer(tx, customerId(invoice));
 
     if (!userId) return;
@@ -330,6 +358,13 @@ export class StripeWebhookService {
     if (!stripeSubscriptionId) {
       this.logger.warn(
         `invoice.payment_failed has no local subscription for user ${userId}`,
+      );
+      return;
+    }
+
+    if (stripeSubscriptionId !== failedSubscriptionId) {
+      this.logger.warn(
+        `Ignoring failed invoice ${invoice.id} for stale subscription ${failedSubscriptionId}`,
       );
       return;
     }
@@ -441,6 +476,22 @@ function customerId(obj: Stripe.Subscription | Stripe.Invoice): string | null {
   return typeof obj.customer === 'string'
     ? obj.customer
     : (obj.customer?.id ?? null);
+}
+
+/** Resolves both the current and legacy Stripe invoice subscription shapes. */
+function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const current = invoice.parent?.subscription_details?.subscription;
+  if (typeof current === 'string') return current;
+  if (current?.id) return current.id;
+
+  const legacy = (
+    invoice as Stripe.Invoice & {
+      subscription?: string | Stripe.Subscription | null;
+    }
+  ).subscription;
+
+  if (typeof legacy === 'string') return legacy;
+  return legacy?.id ?? null;
 }
 
 type BillingInterval = import('@prisma/client').BillingInterval;

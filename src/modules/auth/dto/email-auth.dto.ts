@@ -26,6 +26,22 @@ export interface UpdateUserDto {
   name: string;
 }
 
+export interface PasswordResetRequestDto {
+  email: string;
+}
+
+export interface PasswordResetOtpCheckDto {
+  email: string;
+  otp: string;
+  type: 'forget-password';
+}
+
+export interface PasswordResetWithOtpDto {
+  email: string;
+  otp: string;
+  password: string;
+}
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function validateSignUpEmailDto(body: unknown): SignUpEmailDto {
@@ -93,6 +109,48 @@ export function validateUpdateUserDto(body: unknown): UpdateUserDto {
   return { name };
 }
 
+export function validatePasswordResetRequestDto(
+  body: unknown,
+): PasswordResetRequestDto {
+  const dto = assertObject(body);
+  assertEmail(dto.email);
+
+  return { email: normalizeEmail(dto.email) };
+}
+
+export function validatePasswordResetOtpCheckDto(
+  body: unknown,
+): PasswordResetOtpCheckDto {
+  const dto = assertObject(body);
+  assertEmail(dto.email);
+  assertOtp(dto.otp);
+
+  if (dto.type !== 'forget-password') {
+    throw new BadRequestException('type must be forget-password');
+  }
+
+  return {
+    email: normalizeEmail(dto.email),
+    otp: dto.otp,
+    type: 'forget-password',
+  };
+}
+
+export function validatePasswordResetWithOtpDto(
+  body: unknown,
+): PasswordResetWithOtpDto {
+  const dto = assertObject(body);
+  assertEmail(dto.email);
+  assertOtp(dto.otp);
+  assertPassword(dto.password);
+
+  return {
+    email: normalizeEmail(dto.email),
+    otp: dto.otp,
+    password: dto.password,
+  };
+}
+
 function assertObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('Request body must be a JSON object');
@@ -112,6 +170,16 @@ function assertEmail(value: unknown): asserts value is string {
 
   if (!emailPattern.test(value.trim())) {
     throw new BadRequestException('email must be a valid email address');
+  }
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function assertOtp(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !/^\d{6}$/.test(value)) {
+    throw new BadRequestException('otp must be a 6-digit code');
   }
 }
 

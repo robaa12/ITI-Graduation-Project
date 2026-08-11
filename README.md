@@ -38,3 +38,27 @@ each request, kept on the submitted host after redirects, checked against
 `robots.txt`, and bounded by page/depth/text limits. Documents and official
 social posts are indexed as supplied. Re-index sources whenever the embedding
 model or `RAG_INDEX_VERSION` changes.
+
+## Meta connectors and publishing
+
+Meta configuration is optional at startup. Set `META_APP_ID`,
+`META_APP_SECRET`, `META_REDIRECT_URI`, and a base64-encoded 32-byte
+`META_TOKEN_ENCRYPTION_KEY` to enable OAuth. `META_LOGIN_CONFIG_ID` supports a
+Facebook Login for Business configuration when the Meta app uses one. Keep the
+Graph API version explicit with `META_GRAPH_API_VERSION`.
+
+The authenticated connector API exposes:
+
+- `GET /api/connectors/meta/status`
+- `POST /api/connectors/meta/oauth/start`
+- `GET /api/connectors/meta/oauth/callback`
+- `POST /api/connectors/meta/sync`
+- `PATCH /api/connectors/meta/accounts/:id`
+- `DELETE /api/connectors/meta`
+
+Tokens are AES-256-GCM encrypted and are never returned by the API. Scheduling
+uses `POST /api/contents/:contentId/publications`; clients can list those rows,
+cancel a queued publication, or explicitly retry a failed one. Only content
+fanned out from a completed strategy-backed content workflow is publishable.
+Instagram additionally requires a public HTTPS `imageUrl` in the generated
+content payload.

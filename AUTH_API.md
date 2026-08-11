@@ -26,6 +26,9 @@ The complete endpoint list is:
 | `GET` | `/api/auth/session` | Get the current session | No |
 | `POST` | `/api/auth/email-otp/send-verification-otp` | Send an email OTP | Usually no |
 | `POST` | `/api/auth/email-otp/verify-email` | Verify a signup email with an OTP | No |
+| `POST` | `/api/auth/email-otp/request-password-reset` | Send a password-reset OTP | No |
+| `POST` | `/api/auth/email-otp/check-verification-otp` | Check a password-reset OTP | No |
+| `POST` | `/api/auth/email-otp/reset-password` | Set a new password with a verified OTP | No |
 | `POST` | `/api/auth/sign-in/email-otp` | Sign in with an email OTP | No |
 
 ## Frontend Authentication Rules
@@ -446,6 +449,60 @@ This response sets the HTTP-only session cookie. If the email does not already b
 | `400` | Expired OTP | `OTP_EXPIRED` |
 | `403` | More than 3 failed attempts | `TOO_MANY_ATTEMPTS` |
 
+### 8. Reset a Forgotten Password With OTP
+
+Request a recovery code:
+
+```http
+POST /api/auth/email-otp/request-password-reset
+```
+
+```json
+{
+  "email": "jane@example.com"
+}
+```
+
+This endpoint always returns `{ "success": true }` for a valid email format, even when no matching account exists. The neutral response prevents account discovery.
+
+Optionally check the code before showing the new-password form:
+
+```http
+POST /api/auth/email-otp/check-verification-otp
+```
+
+```json
+{
+  "email": "jane@example.com",
+  "otp": "123456",
+  "type": "forget-password"
+}
+```
+
+Set the new password:
+
+```http
+POST /api/auth/email-otp/reset-password
+```
+
+```json
+{
+  "email": "jane@example.com",
+  "otp": "123456",
+  "password": "new-secure-password"
+}
+```
+
+The OTP is six digits, expires after five minutes, permits three failed attempts, and is consumed when the password is reset. A successful reset returns `{ "success": true }` and revokes the user's existing sessions.
+
+#### Possible errors
+
+| Status | Situation | Example code |
+| --- | --- | --- |
+| `400` | Invalid or expired OTP | `INVALID_OTP` or `OTP_EXPIRED` |
+| `400` | Password outside the 8–128 character limit | Password validation error |
+| `403` | More than 3 failed attempts | `TOO_MANY_ATTEMPTS` |
+
 ## Recommended Frontend Flow
 
 ### Password signup
@@ -467,6 +524,14 @@ This response sets the HTTP-only session cookie. If the email does not already b
 2. Show the OTP input screen.
 3. Call `POST /api/auth/sign-in/email-otp` with the email and OTP.
 4. Call `GET /api/auth/session` to load the authenticated user.
+
+### Forgotten password
+
+1. Call `POST /api/auth/email-otp/request-password-reset` with the account email.
+2. Always show the same confirmation message, regardless of whether the account exists.
+3. Check the six-digit code with `POST /api/auth/email-otp/check-verification-otp` and `type: "forget-password"`.
+4. Call `POST /api/auth/email-otp/reset-password` with the email, OTP, and new password.
+5. Send the user to the login page after success.
 
 ### Logout
 

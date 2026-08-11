@@ -9,14 +9,23 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { CampaignContentRun, Prisma, WorkflowRunStatus } from '@prisma/client';
+import {
+  CampaignContentRun,
+  Prisma,
+  StrategyApprovalStatus,
+  WorkflowAccountingStatus,
+  WorkflowExecutionKind,
+  WorkflowRunStatus,
+} from '@prisma/client';
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { parseResumeRequest } from '../mastra/resume-request';
+import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { StrategyService } from '../strategy/strategy.service';
+import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
@@ -70,14 +79,26 @@ export class ContentWorkflowService {
 
     // The worker creates and starts this exact ID at Mastra, keeping Studio,
     // the queue job, and this database row attached to one execution.
-    const record = await this.prisma.campaignContentRun.create({
-      data: {
-        campaignId,
-        strategyId,
-        runId: randomUUID(),
-        input: input as Prisma.InputJsonValue,
-        status: WorkflowRunStatus.PENDING,
-      },
+    const runId = randomUUID();
+    const record = await this.prisma.$transaction(async (tx) => {
+      const contentRun = await tx.campaignContentRun.create({
+        data: {
+          campaignId,
+          strategyId,
+          runId,
+          input: input as Prisma.InputJsonValue,
+          status: WorkflowRunStatus.PENDING,
+        },
+      });
+      await tx.workflowExecution.create({
+        data: {
+          mastraRunId: runId,
+          workflowId: MASTRA_WORKFLOWS.content,
+          kind: WorkflowExecutionKind.CONTENT,
+          contentRunId: contentRun.id,
+        },
+      });
+      return contentRun;
     });
 
     try {
@@ -100,6 +121,14 @@ export class ContentWorkflowService {
       await this.prisma.campaignContentRun.updateMany({
         where: { id: record.id },
         data: { status: WorkflowRunStatus.FAILED, error: message },
+      });
+      await this.prisma.workflowExecution.updateMany({
+        where: { mastraRunId: runId },
+        data: {
+          status: WorkflowRunStatus.FAILED,
+          accountingStatus: WorkflowAccountingStatus.UNAVAILABLE,
+          finishedAt: new Date(),
+        },
       });
 
       this.logger.error(
@@ -150,6 +179,12 @@ export class ContentWorkflowService {
       );
     }
 
+    if (strategy.approvalStatus !== StrategyApprovalStatus.APPROVED) {
+      throw new ConflictException(
+        `Strategy ${rawId} must be approved before content can be generated`,
+      );
+    }
+
     const campaignStrategy = (
       strategy.output as { campaignStrategy?: unknown } | null
     )?.campaignStrategy;
@@ -184,14 +219,27 @@ export class ContentWorkflowService {
         `Content run ${id} has no Mastra run to resume`,
       );
     }
+    const mastraRunId = run.runId;
 
-    const { count } = await this.prisma.campaignContentRun.updateMany({
-      where: { id, status: WorkflowRunStatus.SUSPENDED },
-      data: {
-        status: WorkflowRunStatus.PENDING,
-        suspendPayload: Prisma.DbNull,
-        error: null,
-      },
+    const count = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.campaignContentRun.updateMany({
+        where: { id, status: WorkflowRunStatus.SUSPENDED },
+        data: {
+          status: WorkflowRunStatus.PENDING,
+          suspendPayload: Prisma.DbNull,
+          error: null,
+        },
+      });
+      if (claimed.count > 0) {
+        await tx.workflowExecution.updateMany({
+          where: { mastraRunId },
+          data: {
+            accountingStatus: WorkflowAccountingStatus.PENDING,
+            usageCollectedAt: null,
+          },
+        });
+      }
+      return claimed.count;
     });
 
     if (count === 0) {
@@ -222,6 +270,10 @@ export class ContentWorkflowService {
           status: WorkflowRunStatus.SUSPENDED,
           suspendPayload: run.suspendPayload ?? Prisma.DbNull,
         },
+      });
+      await this.prisma.workflowExecution.updateMany({
+        where: { mastraRunId },
+        data: { accountingStatus: WorkflowAccountingStatus.UNAVAILABLE },
       });
       throw error;
     }
@@ -258,8 +310,13 @@ export class ContentWorkflowService {
     };
   }
 
-  async findOne(userId: string, id: string): Promise<CampaignContentRun> {
-    return this.findOwnedOrFail(userId, id);
+  async findOne(userId: string, id: string) {
+    const run = await this.findOwnedOrFail(userId, id);
+    const executions = await this.prisma.workflowExecution.findMany({
+      where: { contentRunId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+    return { ...run, ...presentWorkflowAccounting(executions) };
   }
 
   async findOwnedOrFail(

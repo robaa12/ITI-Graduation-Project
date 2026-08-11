@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { KnowledgeSourceStatus, KnowledgeSourceType, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 
@@ -16,6 +17,7 @@ import { MastraClient } from '../mastra/mastra.client';
 import { KNOWLEDGE_QUEUE, KnowledgeIndexJob } from './knowledge.queue';
 import { WebsiteCrawlerService } from './website-crawler.service';
 import { assertPublicHostname } from './url-safety';
+import type { UploadedDocumentFile } from './document-extractor';
 import {
   CreateDocumentSourceDto,
   CreateSocialSourceDto,
@@ -40,7 +42,7 @@ export class KnowledgeService {
 
   async list(userId: string, projectId: string) {
     await this.projects.findOwnedOrFail(userId, projectId);
-    return this.prisma.knowledgeSource.findMany({
+    const sources = await this.prisma.knowledgeSource.findMany({
       where: { projectId },
       orderBy: { updatedAt: 'desc' },
       select: {
@@ -49,6 +51,7 @@ export class KnowledgeService {
         _count: { select: { pages: true } },
       },
     });
+    return sources.map((source) => ({ ...source, freshness: sourceFreshness(source) }));
   }
 
   async addWebsite(userId: string, projectId: string, dto: CreateWebsiteSourceDto) {
@@ -83,6 +86,32 @@ export class KnowledgeService {
     if (!content) throw new BadRequestException('Document content cannot be empty');
     const source = await this.prisma.knowledgeSource.create({
       data: { projectId, type: KnowledgeSourceType.DOCUMENT, name: dto.name.trim(), content },
+    });
+    await this.enqueue(source.id);
+    return source;
+  }
+
+  async addUploadedDocument(
+    userId: string,
+    projectId: string,
+    file: UploadedDocumentFile,
+    content: string,
+  ) {
+    this.ensureEnabled();
+    await this.projects.findOwnedOrFail(userId, projectId);
+    const source = await this.prisma.knowledgeSource.create({
+      data: {
+        projectId,
+        type: KnowledgeSourceType.DOCUMENT,
+        name: file.originalname.slice(0, 160),
+        content,
+        metadata: {
+          originalFileName: file.originalname,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          uploadedAt: new Date().toISOString(),
+        },
+      },
     });
     await this.enqueue(source.id);
     return source;
@@ -173,6 +202,8 @@ export class KnowledgeService {
           metadata: {
             ...(asObject(source.metadata)), chunkCount: result.chunkCount,
             embeddingModel: result.embeddingModel, indexVersion: result.indexVersion,
+            contentHash: createHash('sha256').update(content).digest('hex'),
+            lastCheckedAt: new Date().toISOString(),
             ...(website ? { pageCount: pages.length, crawlWarnings: website.warnings } : {}),
           },
         },
@@ -251,4 +282,32 @@ export class KnowledgeService {
 
 function asObject(value: Prisma.JsonValue | null): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function sourceFreshness(source: {
+  type: KnowledgeSourceType;
+  status: KnowledgeSourceStatus;
+  indexedAt: Date | null;
+  updatedAt: Date;
+}) {
+  if (source.status === KnowledgeSourceStatus.FAILED) {
+    return { status: 'error' as const, checkedAt: source.indexedAt };
+  }
+  if (!source.indexedAt) {
+    return { status: 'never-indexed' as const, checkedAt: null };
+  }
+  const maxAgeDays = source.type === KnowledgeSourceType.WEBSITE
+    ? 7
+    : source.type === KnowledgeSourceType.DOCUMENT
+      ? 90
+      : 1;
+  const refreshAfter = new Date(
+    source.indexedAt.getTime() + maxAgeDays * 24 * 60 * 60 * 1_000,
+  );
+  return {
+    status: refreshAfter <= new Date() ? 'stale' as const : 'fresh' as const,
+    checkedAt: source.indexedAt,
+    refreshAfter,
+    maxAgeDays,
+  };
 }

@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { MastraModule } from '../mastra/mastra.module';
 import { ContentExportService } from './content-export.service';
 import { ContentGenerationProcessor } from './content-generation.processor';
 import { CONTENT_GENERATION_QUEUE } from './content-generation.queue';
@@ -12,12 +13,13 @@ import {
 } from './content.controller';
 import { ContentService } from './content.service';
 import { CONTENT_GENERATOR } from './generator/content-generator.port';
-import { PlaceholderContentGenerator } from './generator/placeholder-content-generator';
+import { MastraContentGenerator } from './generator/mastra-content-generator';
 
 @Module({
   imports: [
     AuthModule,
     CampaignsModule,
+    MastraModule,
     BullModule.registerQueue({ name: CONTENT_GENERATION_QUEUE }),
   ],
   controllers: [CampaignContentController, ContentController],
@@ -25,9 +27,7 @@ import { PlaceholderContentGenerator } from './generator/placeholder-content-gen
     ContentService,
     ContentExportService,
     ContentGenerationProcessor,
-    // Swap this class for the real agent client once it is available.
-    // It only has to implement ContentGeneratorPort.
-    { provide: CONTENT_GENERATOR, useClass: PlaceholderContentGenerator },
+    { provide: CONTENT_GENERATOR, useClass: MastraContentGenerator },
   ],
   exports: [ContentService],
 })

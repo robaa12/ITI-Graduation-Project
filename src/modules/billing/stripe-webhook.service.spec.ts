@@ -113,7 +113,9 @@ describe('StripeWebhookService', () => {
     it('swallows a concurrent duplicate that hits the unique constraint', async () => {
       const event = makeEvent('customer.subscription.updated');
       stripe.webhooks.constructEvent.mockReturnValue(event);
-      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      prisma.subscriptionEvent.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'local-event-id' });
       tx.subscriptionEvent.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('duplicate key', {
           code: 'P2002',
@@ -126,6 +128,22 @@ describe('StripeWebhookService', () => {
       });
       // The concurrent duplicate never re-applies the event's effects.
       expect(tx.subscription.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a unique violation that was not caused by the event id', async () => {
+      const event = makeEvent('customer.subscription.updated');
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.subscriptionEvent.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('duplicate customer id', {
+          code: 'P2002',
+          clientVersion: '6.19.3',
+        }),
+      );
+
+      await expect(service.handle(rawBody, 'sig')).rejects.toMatchObject({
+        code: 'P2002',
+      });
     });
 
     it('rethrows non-unique errors from the transaction', async () => {
@@ -220,6 +238,7 @@ describe('StripeWebhookService', () => {
       const arg = tx.subscription.upsert.mock.calls[0][0];
       expect(arg.update).toMatchObject({
         planId: 'plan-2',
+        stripeSubscriptionId: 'sub_123',
         stripePriceId: 'price_pro_monthly',
         status: SubscriptionStatus.ACTIVE,
       });
@@ -269,10 +288,15 @@ describe('StripeWebhookService', () => {
             {
               current_period_start: 1_700_000_000,
               current_period_end: 1_700_000_000 + 2_592_000,
+              price: {
+                id: 'price_pro_monthly',
+                recurring: { interval: 'month' },
+              },
             },
           ],
         },
       });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-2' });
       tx.subscription.update.mockResolvedValue({});
 
       await expect(service.handle(rawBody, 'sig')).resolves.toEqual({
@@ -281,11 +305,15 @@ describe('StripeWebhookService', () => {
       expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith('sub_123');
       expect(tx.subscription.update).toHaveBeenCalledWith({
         where: { userId: 'user-1' },
-        data: {
+        data: expect.objectContaining({
+          planId: 'plan-2',
+          stripeSubscriptionId: 'sub_123',
+          stripePriceId: 'price_pro_monthly',
+          billingInterval: expect.any(String),
           status: SubscriptionStatus.ACTIVE,
           currentPeriodStart: expect.any(Date),
           currentPeriodEnd: expect.any(Date),
-        },
+        }),
       });
     });
   });
@@ -293,7 +321,14 @@ describe('StripeWebhookService', () => {
   describe('invoice.payment_failed', () => {
     it('cancels the Stripe subscription and removes access on the first failure', async () => {
       const event = makeEvent('invoice.payment_failed');
-      event.data.object = { id: 'in_123', customer: 'cus_123' };
+      event.data.object = {
+        id: 'in_123',
+        customer: 'cus_123',
+        billing_reason: 'subscription_cycle',
+        parent: {
+          subscription_details: { subscription: 'sub_123' },
+        },
+      };
       stripe.webhooks.constructEvent.mockReturnValue(event);
       prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
       tx.subscription.findUnique
@@ -317,7 +352,14 @@ describe('StripeWebhookService', () => {
 
     it('survives a failed Stripe cancel call but still removes local access', async () => {
       const event = makeEvent('invoice.payment_failed');
-      event.data.object = { id: 'in_123', customer: 'cus_123' };
+      event.data.object = {
+        id: 'in_123',
+        customer: 'cus_123',
+        billing_reason: 'subscription_cycle',
+        parent: {
+          subscription_details: { subscription: 'sub_123' },
+        },
+      };
       stripe.webhooks.constructEvent.mockReturnValue(event);
       prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
       tx.subscription.findUnique
@@ -336,10 +378,60 @@ describe('StripeWebhookService', () => {
 
     it('does nothing when no local subscription references the customer', async () => {
       const event = makeEvent('invoice.payment_failed');
-      event.data.object = { id: 'in_123', customer: 'cus_unknown' };
+      event.data.object = {
+        id: 'in_123',
+        customer: 'cus_unknown',
+        billing_reason: 'subscription_cycle',
+        parent: {
+          subscription_details: { subscription: 'sub_123' },
+        },
+      };
       stripe.webhooks.constructEvent.mockReturnValue(event);
       prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
       tx.subscription.findUnique.mockResolvedValue(null);
+
+      await expect(service.handle(rawBody, 'sig')).resolves.toEqual({
+        received: true,
+      });
+      expect(stripe.subscriptions.cancel).not.toHaveBeenCalled();
+      expect(tx.subscription.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel for a failed plan-change invoice', async () => {
+      const event = makeEvent('invoice.payment_failed');
+      event.data.object = {
+        id: 'in_upgrade',
+        customer: 'cus_123',
+        billing_reason: 'subscription_update',
+        parent: {
+          subscription_details: { subscription: 'sub_123' },
+        },
+      };
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+
+      await expect(service.handle(rawBody, 'sig')).resolves.toEqual({
+        received: true,
+      });
+      expect(tx.subscription.findUnique).not.toHaveBeenCalled();
+      expect(stripe.subscriptions.cancel).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel when the failed renewal belongs to a stale subscription', async () => {
+      const event = makeEvent('invoice.payment_failed');
+      event.data.object = {
+        id: 'in_old',
+        customer: 'cus_123',
+        billing_reason: 'subscription_cycle',
+        parent: {
+          subscription_details: { subscription: 'sub_old' },
+        },
+      };
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.subscription.findUnique
+        .mockResolvedValueOnce({ userId: 'user-1' })
+        .mockResolvedValueOnce({ stripeSubscriptionId: 'sub_current' });
 
       await expect(service.handle(rawBody, 'sig')).resolves.toEqual({
         received: true,

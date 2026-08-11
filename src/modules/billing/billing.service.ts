@@ -111,6 +111,7 @@ export class BillingService {
     dto: CreateCheckoutDto,
   ): Promise<{ url: string }> {
     const plan = await this.findActivePlanOrFail(dto.planCode);
+    const billingInterval = toBillingInterval(dto.interval);
     const priceId =
       dto.interval === 'month'
         ? plan.stripeMonthlyPriceId
@@ -138,7 +139,13 @@ export class BillingService {
     // which prorates, rather than checking out a brand-new subscription.
     const currentSubscription = await this.prisma.subscription.findUnique({
       where: { userId },
-      select: { status: true, stripeSubscriptionId: true },
+      select: {
+        planId: true,
+        billingInterval: true,
+        checkoutSessionId: true,
+        status: true,
+        stripeSubscriptionId: true,
+      },
     });
 
     if (
@@ -158,23 +165,71 @@ export class BillingService {
       );
     }
 
+    if (
+      currentSubscription?.status === SubscriptionStatus.INCOMPLETE &&
+      currentSubscription.checkoutSessionId
+    ) {
+      const pendingSession = await this.retrieveCheckoutSessionOrFail(
+        currentSubscription.checkoutSessionId,
+      );
+
+      if (pendingSession.status === 'open') {
+        if (
+          currentSubscription.planId !== plan.id ||
+          currentSubscription.billingInterval !== billingInterval
+        ) {
+          throw new ConflictException(
+            'A checkout for another plan is already in progress',
+          );
+        }
+
+        if (!pendingSession.url) {
+          throw new ServiceUnavailableException(
+            'Stripe returned a malformed Checkout Session',
+          );
+        }
+
+        return { url: pendingSession.url };
+      }
+
+      if (pendingSession.status === 'complete') {
+        throw new ConflictException(
+          'The previous checkout is complete and is still being processed',
+        );
+      }
+    }
+
     const stripeCustomerId = await this.findOrCreateCustomer(userId, user);
+    // Every retry for the same local checkout generation uses the same key.
+    // Once a session is persisted, its id becomes the next generation key.
+    const checkoutGeneration =
+      currentSubscription?.checkoutSessionId ?? 'initial';
 
     let session: Stripe.Checkout.Session;
     try {
-      session = await this.stripe.checkout.sessions.create({
-        mode: 'subscription',
-        customer: stripeCustomerId,
-        line_items: [{ price: priceId, quantity: 1 }],
-        success_url:
-          this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
-        cancel_url: this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
-        client_reference_id: userId,
-        metadata: { userId },
-        subscription_data: {
-          metadata: { userId, planCode: dto.planCode, interval: dto.interval },
+      session = await this.stripe.checkout.sessions.create(
+        {
+          mode: 'subscription',
+          customer: stripeCustomerId,
+          line_items: [{ price: priceId, quantity: 1 }],
+          success_url:
+            this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
+          cancel_url:
+            this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+          client_reference_id: userId,
+          metadata: { userId },
+          subscription_data: {
+            metadata: {
+              userId,
+              planCode: dto.planCode,
+              interval: dto.interval,
+            },
+          },
         },
-      });
+        {
+          idempotencyKey: `checkout:${userId}:${checkoutGeneration}`,
+        },
+      );
     } catch (error) {
       this.logger.error(
         'Failed to create Stripe Checkout Session',
@@ -202,7 +257,7 @@ export class BillingService {
         where: { userId },
         data: {
           planId: plan.id,
-          billingInterval: toBillingInterval(dto.interval),
+          billingInterval,
           stripeCustomerId,
           checkoutSessionId: session.id,
           status: SubscriptionStatus.INCOMPLETE,
@@ -221,7 +276,7 @@ export class BillingService {
         data: {
           userId,
           planId: plan.id,
-          billingInterval: toBillingInterval(dto.interval),
+          billingInterval,
           stripeCustomerId,
           checkoutSessionId: session.id,
           status: SubscriptionStatus.INCOMPLETE,
@@ -249,6 +304,7 @@ export class BillingService {
   ): Promise<{ url: string | null }> {
     const subscription = await this.findOwnSubscriptionOrFail(userId);
     const plan = await this.findActivePlanOrFail(dto.planCode);
+    const billingInterval = toBillingInterval(dto.interval);
     const priceId =
       dto.interval === 'month'
         ? plan.stripeMonthlyPriceId
@@ -288,6 +344,16 @@ export class BillingService {
       throw new ConflictException('Stripe subscription has no items');
     }
 
+    if (current.pending_update) {
+      throw new ConflictException(
+        'A subscription plan change is already awaiting payment',
+      );
+    }
+
+    if (item.price.id === priceId) {
+      return { url: null };
+    }
+
     try {
       const updated = await this.stripe.subscriptions.update(
         subscription.stripeSubscriptionId,
@@ -296,34 +362,41 @@ export class BillingService {
           // Invoice the prorated difference immediately and keep the change
           // pending until the customer pays it on Stripe's hosted page.
           proration_behavior: 'always_invoice',
-          payment_behavior: 'default_incomplete',
+          payment_behavior: 'pending_if_incomplete',
+        },
+        {
+          idempotencyKey: `change-plan:${subscription.stripeSubscriptionId}:${item.price.id}:${priceId}`,
         },
       );
-
-      await this.prisma.subscription.update({
-        where: { userId },
-        data: {
-          planId: plan.id,
-          billingInterval: toBillingInterval(dto.interval),
-          stripePriceId: priceId,
-          status: mapSubscriptionStatus(updated.status),
-          currentPeriodStart: currentPeriodStart(updated),
-          currentPeriodEnd: currentPeriodEnd(updated),
-        },
-      });
 
       const invoice = await this.resolveLatestInvoice(updated);
 
       // An amount due means the customer must confirm the switch by paying the
       // difference on Stripe's hosted invoice page.
       if (
-        invoice &&
-        invoice.amount_due > 0 &&
-        invoice.status !== 'paid' &&
-        invoice.hosted_invoice_url
+        updated.pending_update ||
+        (invoice && invoice.amount_due > 0 && invoice.status !== 'paid')
       ) {
+        if (!invoice?.hosted_invoice_url) {
+          throw new ServiceUnavailableException(
+            'Stripe did not return a payment URL for the pending plan change',
+          );
+        }
+
         return { url: invoice.hosted_invoice_url };
       }
+
+      await this.prisma.subscription.update({
+        where: { userId },
+        data: {
+          planId: plan.id,
+          billingInterval,
+          stripePriceId: priceId,
+          status: mapSubscriptionStatus(updated.status),
+          currentPeriodStart: currentPeriodStart(updated),
+          currentPeriodEnd: currentPeriodEnd(updated),
+        },
+      });
 
       return { url: null };
     } catch (error) {
@@ -442,11 +515,14 @@ export class BillingService {
     }
 
     try {
-      const customer = await this.stripe.customers.create({
-        email: user.email,
-        name: user.name,
-        metadata: { userId },
-      });
+      const customer = await this.stripe.customers.create(
+        {
+          email: user.email,
+          name: user.name,
+          metadata: { userId },
+        },
+        { idempotencyKey: `billing-customer:${userId}` },
+      );
 
       // Persist immediately so a failed Checkout never re-creates customers.
       await this.prisma.subscription.upsert({
@@ -464,6 +540,22 @@ export class BillingService {
       this.logger.error('Failed to create Stripe Customer', error as Error);
       throw new ServiceUnavailableException(
         'Could not create billing customer, please try again',
+      );
+    }
+  }
+
+  private async retrieveCheckoutSessionOrFail(
+    checkoutSessionId: string,
+  ): Promise<Stripe.Checkout.Session> {
+    try {
+      return await this.stripe.checkout.sessions.retrieve(checkoutSessionId);
+    } catch (error) {
+      this.logger.error(
+        `Could not inspect pending Checkout Session ${checkoutSessionId}`,
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not verify the pending checkout, please try again',
       );
     }
   }

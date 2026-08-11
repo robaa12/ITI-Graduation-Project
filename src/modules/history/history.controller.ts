@@ -1,4 +1,10 @@
-import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  UseGuards,
+} from '@nestjs/common';
 import { WorkflowRunStatus } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -7,6 +13,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { ProjectsService } from '../projects/projects.service';
+import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 
 type HistoryStatus = 'running' | 'success' | 'failed' | 'suspended';
 
@@ -52,7 +59,9 @@ export class HistoryController {
     const histories = await Promise.all(
       campaigns.map((campaign) => this.historyForCampaign(campaign.id)),
     );
-    return histories.flat().toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return histories
+      .flat()
+      .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   private async historyForCampaign(campaignId: string) {
@@ -60,12 +69,32 @@ export class HistoryController {
       this.prisma.marketingStrategy.findMany({
         where: { campaignId },
         orderBy: { createdAt: 'desc' },
-        select: { id: true, status: true, output: true, error: true, createdAt: true, updatedAt: true },
+        select: {
+          id: true,
+          status: true,
+          output: true,
+          error: true,
+          approvalStatus: true,
+          reviewedAt: true,
+          reviewerName: true,
+          reviewNote: true,
+          createdAt: true,
+          updatedAt: true,
+          executions: { orderBy: { createdAt: 'asc' } },
+        },
       }),
       this.prisma.campaignContentRun.findMany({
         where: { campaignId },
         orderBy: { createdAt: 'desc' },
-        select: { id: true, status: true, output: true, error: true, createdAt: true, updatedAt: true },
+        select: {
+          id: true,
+          status: true,
+          output: true,
+          error: true,
+          createdAt: true,
+          updatedAt: true,
+          executions: { orderBy: { createdAt: 'asc' } },
+        },
       }),
     ]);
 
@@ -76,8 +105,13 @@ export class HistoryController {
         status: toHistoryStatus(run.status),
         result: run.output,
         error: run.error,
+        approvalStatus: run.approvalStatus,
+        reviewedAt: run.reviewedAt?.toISOString() ?? null,
+        reviewerName: run.reviewerName,
+        reviewNote: run.reviewNote,
         createdAt: run.createdAt.toISOString(),
         updatedAt: run.updatedAt.toISOString(),
+        ...presentWorkflowAccounting(run.executions),
       })),
       ...contentRuns.map((run) => ({
         id: run.id,
@@ -87,6 +121,7 @@ export class HistoryController {
         error: run.error,
         createdAt: run.createdAt.toISOString(),
         updatedAt: run.updatedAt.toISOString(),
+        ...presentWorkflowAccounting(run.executions),
       })),
     ].toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

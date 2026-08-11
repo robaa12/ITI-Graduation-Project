@@ -8,16 +8,16 @@ This document describes the Stripe subscription endpoints exposed by the backend
 http://localhost:3000
 ```
 
-All billing endpoints live below `/api/subscriptions` and require an authenticated session cookie (see `AUTH_API.md`). The webhook endpoint `/api/stripe/webhook` is public by design — Stripe calls it.
+Billing endpoints live below `/api/subscriptions`. Plan listing is public for the pricing page; account-specific endpoints require an authenticated session cookie (see `AUTH_API.md`). The webhook endpoint `/api/stripe/webhook` is public by design — Stripe calls it.
 
-| Method | Endpoint | Purpose | Session required |
-| --- | --- | --- | --- |
-| `GET` | `/api/subscriptions/plans` | List purchasable plans | Yes |
-| `GET` | `/api/subscriptions/me` | The current user's subscription | Yes |
-| `POST` | `/api/subscriptions/checkout` | Start Stripe Checkout (subscription mode) | Yes |
-| `PATCH` | `/api/subscriptions/plan` | Upgrade/downgrade the current plan | Yes |
-| `POST` | `/api/subscriptions/cancel` | Cancel immediately | Yes |
-| `POST` | `/api/stripe/webhook` | Stripe event delivery | No (signature-verified) |
+| Method  | Endpoint                      | Purpose                                   | Session required        |
+| ------- | ----------------------------- | ----------------------------------------- | ----------------------- |
+| `GET`   | `/api/subscriptions/plans`    | List purchasable plans                    | No                      |
+| `GET`   | `/api/subscriptions/me`       | The current user's subscription           | Yes                     |
+| `POST`  | `/api/subscriptions/checkout` | Start Stripe Checkout (subscription mode) | Yes                     |
+| `PATCH` | `/api/subscriptions/plan`     | Upgrade/downgrade the current plan        | Yes                     |
+| `POST`  | `/api/subscriptions/cancel`   | Cancel immediately                        | Yes                     |
+| `POST`  | `/api/stripe/webhook`         | Stripe event delivery                     | No (signature-verified) |
 
 ## How pricing is resolved
 
@@ -108,10 +108,10 @@ Content-Type: application/json
 }
 ```
 
-| Field | Type | Required | Rules |
-| --- | --- | --- | --- |
-| `planCode` | `string` | Yes | Must match an existing active plan code |
-| `interval` | `string` | Yes | `month` or `year` |
+| Field      | Type     | Required | Rules                                   |
+| ---------- | -------- | -------- | --------------------------------------- |
+| `planCode` | `string` | Yes      | Must match an existing active plan code |
+| `interval` | `string` | Yes      | `month` or `year`                       |
 
 #### Success response (`201`)
 
@@ -125,14 +125,16 @@ The browser should be redirected to `url`. The user must be signed in before sta
 
 If the user already has a live (active/trialing/past-due/unpaid) subscription, checkout is rejected with `409` — plan changes use the `PATCH /plan` endpoint instead, which prorates.
 
+If the same user already has an open Checkout Session for the requested plan and interval, the endpoint returns that session's URL. A request for another plan is rejected with `409` until the open Checkout Session is completed or expires. Stripe idempotency keys protect concurrent retries from creating duplicate sessions.
+
 #### Possible errors
 
-| Status | Situation |
-| --- | --- |
-| `400` | Invalid body, or the plan has no Price for the requested interval |
-| `404` | Unknown or inactive plan code |
-| `409` | User already has a live subscription |
-| `503` | Stripe could not create the session |
+| Status | Situation                                                         |
+| ------ | ----------------------------------------------------------------- |
+| `400`  | Invalid body, or the plan has no Price for the requested interval |
+| `404`  | Unknown or inactive plan code                                     |
+| `409`  | User already has a live subscription                              |
+| `503`  | Stripe could not create the session                               |
 
 ### 4. Change Plan (Upgrade / Downgrade)
 
@@ -150,20 +152,34 @@ Content-Type: application/json
 }
 ```
 
-Same body rules as checkout. The backend updates the existing Stripe subscription and relies on Stripe's default proration behavior (`create_prorations`) to bill/credit the difference.
+Same body rules as checkout. The backend immediately invoices prorations with `always_invoice` and uses Stripe pending updates (`pending_if_incomplete`). An upgrade that requires payment is not written to the local subscription until Stripe confirms payment. A payment-free downgrade is applied immediately.
 
 #### Success response (`200`)
 
-The updated subscription object (same shape as `GET /subscriptions/me`).
+When payment is required, the client receives the Stripe-hosted invoice URL:
+
+```json
+{
+  "url": "https://pay.stripe.com/invoice/..."
+}
+```
+
+When the switch is applied without another payment, `url` is `null`:
+
+```json
+{
+  "url": null
+}
+```
 
 #### Possible errors
 
-| Status | Situation |
-| --- | --- |
-| `404` | No subscription exists for this user, or unknown plan |
-| `400` | The target plan has no Price for the requested interval |
-| `409` | The subscription has no Stripe subscription id yet |
-| `503` | Stripe could not apply the change |
+| Status | Situation                                               |
+| ------ | ------------------------------------------------------- |
+| `404`  | No subscription exists for this user, or unknown plan   |
+| `400`  | The target plan has no Price for the requested interval |
+| `409`  | Another plan change is already awaiting payment         |
+| `503`  | Stripe could not apply the change                       |
 
 ### 5. Cancel Subscription
 
@@ -185,11 +201,11 @@ Cancellation is **immediate** — Stripe subscription is canceled right away (no
 
 #### Possible errors
 
-| Status | Situation |
-| --- | --- |
-| `404` | No subscription for this user |
-| `409` | Already cancelled, or no Stripe subscription id |
-| `503` | Stripe could not cancel |
+| Status | Situation                                       |
+| ------ | ----------------------------------------------- |
+| `404`  | No subscription for this user                   |
+| `409`  | Already cancelled, or no Stripe subscription id |
+| `503`  | Stripe could not cancel                         |
 
 ### 6. Stripe Webhook
 
@@ -202,14 +218,14 @@ Stripe calls this endpoint with subscription events. Signature verification is p
 
 Handled events:
 
-| Event | Effect |
-| --- | --- |
-| `checkout.session.completed` | Attaches the real Stripe subscription id to the user's row |
-| `customer.subscription.created` | Creates/syncs the local subscription row |
-| `customer.subscription.updated` | Syncs plan, interval, price, status, periods |
-| `customer.subscription.deleted` | Marks the local row `CANCELLED` |
-| `invoice.payment_succeeded` | Re-activates / refreshes billing periods |
-| `invoice.payment_failed` | Cancels the subscription (first failure removes access) |
+| Event                           | Effect                                                     |
+| ------------------------------- | ---------------------------------------------------------- |
+| `checkout.session.completed`    | Attaches the real Stripe subscription id to the user's row |
+| `customer.subscription.created` | Creates/syncs the local subscription row                   |
+| `customer.subscription.updated` | Syncs plan, interval, price, status, periods               |
+| `customer.subscription.deleted` | Marks the local row `CANCELLED`                            |
+| `invoice.payment_succeeded`     | Re-activates / refreshes billing periods                   |
+| `invoice.payment_failed`        | Cancels the matching subscription on a failed renewal      |
 
 All events are idempotent: the event id has a unique index and is recorded before any state change, so duplicate or concurrent deliveries never double-apply.
 
@@ -230,10 +246,10 @@ Per plan, create a Product and two recurring Prices (one monthly, one yearly). T
 
 Example for a `pro` plan:
 
-| Price id (example) | Interval | Amount |
-| --- | --- | --- |
-| `price_1QmMonthly...` | Monthly | 29.00 |
-| `price_1QmYearly...` | Yearly | 290.00 |
+| Price id (example)    | Interval | Amount |
+| --------------------- | -------- | ------ |
+| `price_1QmMonthly...` | Monthly  | 29.00  |
+| `price_1QmYearly...`  | Yearly   | 290.00 |
 
 ### 3. Persist the mapping
 
@@ -330,11 +346,11 @@ Each `stripe trigger` emits a realistic payload that the local forwarder signs a
 
 ### 4. Test cards
 
-| Card | Behavior |
-| --- | --- |
-| `4242 4242 4242 4242` | Successful payment |
+| Card                  | Behavior                                                        |
+| --------------------- | --------------------------------------------------------------- |
+| `4242 4242 4242 4242` | Successful payment                                              |
 | `4000 0000 0000 0002` | Declined payment (triggers `invoice.payment_failed` on renewal) |
-| `4000 0027 6000 3184` | Requires authentication (3D Secure) |
+| `4000 0027 6000 3184` | Requires authentication (3D Secure)                             |
 
 ## Webhook idempotency & consistency
 

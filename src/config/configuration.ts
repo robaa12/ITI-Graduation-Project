@@ -18,12 +18,25 @@ export default () => ({
   mastra: {
     baseUrl: process.env.MASTRA_BASE_URL,
     /** Per-request ceiling. Workflow runs chain 6-7 agents and are slow. */
-    timeoutMs: Number(process.env.MASTRA_TIMEOUT_MS ?? 600_000),
+    timeoutMs: Number(process.env.MASTRA_TIMEOUT_MS ?? 900_000),
     internalToken: process.env.MASTRA_INTERNAL_TOKEN,
   },
 
   knowledge: {
     enabled: process.env.RAG_ENABLED === 'true',
+  },
+
+  /** Meta OAuth, account discovery, and Graph API publishing. Optional until configured. */
+  meta: {
+    appId: process.env.META_APP_ID,
+    appSecret: process.env.META_APP_SECRET,
+    loginConfigId: process.env.META_LOGIN_CONFIG_ID,
+    redirectUri: process.env.META_REDIRECT_URI,
+    frontendRedirectUrl:
+      process.env.META_FRONTEND_REDIRECT_URL ??
+      `${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/connectors`,
+    graphVersion: process.env.META_GRAPH_API_VERSION ?? 'v25.0',
+    tokenEncryptionKey: process.env.META_TOKEN_ENCRYPTION_KEY,
   },
 
   /** Backing store for the BullMQ generation queue. */
