@@ -36,6 +36,7 @@
     "bullmq": "^5.81.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "dotenv-expand": "^1000.0.0",
     "joi": "^18.2.3",
     "nodemailer": "^9.0.3",
     "pg": "^8.22.0",
@@ -43,6 +44,7 @@
     "reflect-metadata": "^0.2.2",
     "robots-parser": "^3.0.1",
     "rxjs": "^7.8.1",
+    "stripe": "^22.5.0",
     "typeorm": "^1.0.0"
   },
   "devDependencies": {

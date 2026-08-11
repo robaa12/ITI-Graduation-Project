@@ -18,6 +18,7 @@ model User {
   sessions      Session[]
   accounts      Account[]
   projects      Project[]
+  subscription  Subscription?
 
   @@unique([email])
   @@map("user")
@@ -69,6 +70,89 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+/// Application-level representation of a purchasable SaaS plan. The Stripe
+/// Product/Price mapping lives here so adding a plan never requires touching
+/// application code or hardcoding Stripe IDs.
+model Plan {
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  name                 String
+  description          String?
+  sortOrder            Int      @default(0)
+  active               Boolean  @default(true)
+  stripeProductId      String
+  stripeMonthlyPriceId String?
+  stripeYearlyPriceId  String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@index([active])
+  @@map("plan")
+}
+
+/// Live state of one user's Stripe subscription. Mirrors Stripe's subscription
+/// status so the application can gate access without querying Stripe. Only
+/// identifiers are stored — never card numbers or raw payment credentials.
+model Subscription {
+  id                   String             @id @default(uuid())
+  userId               String             @unique
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId               String?
+  plan                 Plan?              @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus @default(INCOMPLETE)
+  billingInterval      BillingInterval?
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  checkoutSessionId    String?            @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  events               SubscriptionEvent[]
+
+  @@index([status])
+  @@index([stripeSubscriptionId])
+  @@map("subscription")
+}
+
+/// Idempotency + audit trail for Stripe webhook events. `stripeEventId` unique
+/// guards against duplicate deliveries; the JSON payload preserves the raw
+/// event for debugging without relying on Stripe's retry window.
+model SubscriptionEvent {
+  id             String       @id @default(uuid())
+  stripeEventId  String       @unique
+  type           String
+  payload        Json
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  processedAt    DateTime     @default(now())
+
+  @@index([subscriptionId])
+  @@index([type])
+  @@map("subscription_event")
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  UNPAID
+  CANCELLED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
 }
 
 enum ProjectStatus {
