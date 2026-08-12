@@ -1,5 +1,5 @@
 import { MCPClient } from '@mastra/mcp';
-import { createMetaAdsServerConfig } from '../mcp/meta-oauth.mjs';
+import { createMetaAdsServerConfig } from '../src/mastra/mcp/meta-oauth.mjs';
 
 const client = new MCPClient({
   id: 'schema-scan',

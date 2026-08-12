@@ -8,7 +8,9 @@
     "dev": "mastra dev",
     "build": "mastra build",
     "start": "mastra start",
-    "auth:meta": "node --env-file=.env scripts/auth-meta.mjs"
+    "auth:meta": "node --env-file=.env scripts/auth-meta.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "engines": {
     "node": ">=22.13.0 <23"

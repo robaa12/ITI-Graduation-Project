@@ -146,6 +146,7 @@ export class MastraClient {
     }>;
   }): Promise<{
     chunkCount: number;
+    embeddingProvider?: 'gemini' | 'ollama';
     embeddingModel?: string;
     indexVersion?: string;
   }> {
