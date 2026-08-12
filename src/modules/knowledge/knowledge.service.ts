@@ -201,6 +201,7 @@ export class KnowledgeService {
           indexedAt: new Date(),
           metadata: {
             ...(asObject(source.metadata)), chunkCount: result.chunkCount,
+            embeddingProvider: result.embeddingProvider,
             embeddingModel: result.embeddingModel, indexVersion: result.indexVersion,
             contentHash: createHash('sha256').update(content).digest('hex'),
             lastCheckedAt: new Date().toISOString(),

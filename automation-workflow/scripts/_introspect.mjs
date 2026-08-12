@@ -1,5 +1,5 @@
 import { MCPClient } from '@mastra/mcp';
-import { createMetaAdsServerConfig } from '../mcp/meta-oauth.mjs';
+import { createMetaAdsServerConfig } from '../src/mastra/mcp/meta-oauth.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const client = new MCPClient({ id: 'introspect2', servers: { metaAds: createMetaAdsServerConfig() } });

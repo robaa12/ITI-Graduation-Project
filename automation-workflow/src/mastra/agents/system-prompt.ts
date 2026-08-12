@@ -1,3 +1,25 @@
+export const META_CHANNELS = ['facebook', 'instagram', 'messenger', 'meta'] as const;
+
+export const META_OBJECTIVES = {
+  awareness: 'OUTCOME_AWARENESS',
+  traffic: 'OUTCOME_TRAFFIC',
+  'lead-generation': 'OUTCOME_LEADS',
+  conversion: 'OUTCOME_SALES',
+  retargeting: 'OUTCOME_SALES',
+  retention: 'OUTCOME_ENGAGEMENT',
+  loyalty: 'OUTCOME_ENGAGEMENT',
+  advocacy: 'OUTCOME_ENGAGEMENT',
+  engagement: 'OUTCOME_ENGAGEMENT',
+} as const;
+
+export function isMetaChannel(channel: string): boolean {
+  return (META_CHANNELS as readonly string[]).includes(channel.trim().toLowerCase());
+}
+
+export function getMetaObjective(campaignType: string): string | undefined {
+  return META_OBJECTIVES[campaignType.trim().toLowerCase() as keyof typeof META_OBJECTIVES];
+}
+
 export function buildSystemPrompt(workspaceUrl: string): string {
   return `
 # Role
@@ -47,13 +69,13 @@ The user gives you a complete marketing strategy as a single JSON object. That J
 
 ## Deciding what to build
 
-- Work from campaignStrategy.campaignRecommendations. Skip (do not build) any recommendation whose channels[] does not include Meta (facebook/instagram/messenger/meta/youtube) — mention briefly that it was skipped.
+- Work from campaignStrategy.campaignRecommendations. Skip (do not build) any recommendation whose channels[] does not include Meta (${META_CHANNELS.join('/')}) — mention briefly that it was skipped. YouTube is not a Meta channel.
 - Translate each recommendation's type into the Meta objective exactly:
-  - awareness → OUTCOME_AWARENESS
-  - traffic → OUTCOME_TRAFFIC
-  - lead-generation → OUTCOME_LEADS
-  - conversion or retargeting → OUTCOME_PURCHASE
-  - retention / loyalty / advocacy / engagement → OUTCOME_ENGAGEMENT
+  - awareness → ${META_OBJECTIVES.awareness}
+  - traffic → ${META_OBJECTIVES.traffic}
+  - lead-generation → ${META_OBJECTIVES['lead-generation']}
+  - conversion or retargeting → ${META_OBJECTIVES.conversion}
+  - retention / loyalty / advocacy / engagement → ${META_OBJECTIVES.engagement}
 - Budget: when a daily budget is provided, take the meta share from primaryChannels (the "meta" channel's estimatedShare; default 100% if absent) and split it evenly across the Meta campaigns and then across their ad sets. Express amounts in minor units (cents). If no budget is given, omit daily_budget and flag it.
 - Timing: use provided start/end dates; otherwise derive a sensible end_time from each recommendation's duration (e.g. "8 weeks").
 

@@ -1,8 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { Agent } from '@mastra/core/agent';
 import { TaskSignalProvider } from '@mastra/core/signals';
-import { askUserTool, webFetchTool } from '@mastra/core/tools';
-import { createTool } from '@mastra/core/tools';
+import { askUserTool, createTool, webFetchTool } from '@mastra/core/tools';
 import { LocalFilesystem, LocalSandbox, WORKSPACE_TOOLS, Workspace } from '@mastra/core/workspace';
 import { Memory } from '@mastra/memory';
 import { startScheduleTool, stopScheduleTool } from '../tools/schedule-tools.ts';
@@ -25,60 +24,6 @@ const META_ADS_TOOLS = [
 ] as const;
 
 type McpTool = (typeof mcpTools)[string];
-
-function simplifyValueSchema(
-  node: Record<string, unknown> | undefined,
-  depth: number,
-): Record<string, unknown> | undefined {
-  if (!node || typeof node !== 'object' || Array.isArray(node) || typeof node.type !== 'string') {
-    return undefined;
-  }
-  const out: Record<string, unknown> = { type: node.type };
-  if (typeof node.description === 'string' && node.description) {
-    out.description = node.description;
-  }
-  if (node.type === 'object' && node.properties && typeof node.properties === 'object' && depth < 2) {
-    const props: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(node.properties as Record<string, unknown>)) {
-      const inner = simplifyValueSchema(value as Record<string, unknown>, depth + 1);
-      if (inner) props[key] = inner;
-    }
-    if (Object.keys(props).length) out.properties = props;
-  }
-  if (node.type === 'array' && node.items && typeof node.items === 'object') {
-    const item = simplifyValueSchema(node.items as Record<string, unknown>, depth + 1);
-    if (item) out.items = { type: item.type };
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
-function cleanStandardSchema(standardSchema: Record<string, unknown>) {
-  const std = standardSchema['~standard'] as {
-    jsonSchema: { input: (opts?: Record<string, unknown>) => Record<string, unknown> };
-    validate?: unknown;
-  };
-  const origInput = std.jsonSchema.input;
-  return {
-    ...standardSchema,
-    '~standard': {
-      ...std,
-      jsonSchema: {
-        ...std.jsonSchema,
-        input: (opts?: Record<string, unknown>) => {
-          const json = origInput(opts);
-          const properties: Record<string, unknown> = {};
-          for (const [key, value] of Object.entries(
-            (json.properties as Record<string, unknown>) ?? {},
-          )) {
-            const simplified = simplifyValueSchema(value as Record<string, unknown>, 0);
-            if (simplified) properties[key] = simplified;
-          }
-          return { type: 'object', properties };
-        },
-      },
-    },
-  };
-}
 
 const DRY_RUN_DESCRIPTIONS: Record<string, string> = {
   metaAds_ads_get_ad_account_pages:
@@ -146,9 +91,7 @@ const metaAdsTools = Object.fromEntries(
         createTool({
           id,
           description: mcpTool.description,
-          inputSchema: cleanStandardSchema(
-            mcpTool.inputSchema as unknown as Record<string, unknown>,
-          ),
+          inputSchema: mcpTool.inputSchema,
           execute: async (input) => simulate((input ?? {}) as Record<string, unknown>),
         }),
       ];

@@ -1,5 +1,11 @@
+import { setDefaultResultOrder } from 'node:dns';
 import { MCPClient } from '@mastra/mcp';
-import { createMetaAdsServerConfig } from '../mcp/meta-oauth.mjs';
+import { createMetaAdsServerConfig } from '../src/mastra/mcp/meta-oauth.mjs';
+
+// Meta permits plain HTTP for localhost development redirects, but this machine
+// resolves localhost to ::1 first. Prefer IPv4 so the browser and callback
+// listener consistently meet on 127.0.0.1 while the OAuth URI stays localhost.
+setDefaultResultOrder('ipv4first');
 
 const client = new MCPClient({
   id: 'meta-ads-auth-script',
@@ -11,6 +17,12 @@ const client = new MCPClient({
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 try {
+  if (!process.env.META_ACCESS_TOKEN?.trim()) {
+    console.log('No META_ACCESS_TOKEN found; starting the Meta OAuth authorization flow...');
+    await client.authenticate('metaAds', { timeoutMs: 10 * 60 * 1000 });
+    console.log('OAuth authorization completed and tokens were saved locally.');
+  }
+
   let connected = false;
   for (const wait of [0, 30000, 60000, 120000]) {
     if (wait) {
