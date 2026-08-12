@@ -1,0 +1,347 @@
+{
+  "product": {
+    "name": "ReportRover",
+    "type": "Marketing analytics SaaS",
+    "industry": "Software",
+    "businessModel": "saas",
+    "productMaturity": "mvp",
+    "pricingModel": "tiered",
+    "pricingNotes": "Starter $79/mo, Pro $199/mo, Scale $499/mo; 14-day free trial",
+    "coreFeatures": [
+      "Automated weekly report scheduling",
+      "Pulls data from Meta, Google Ads, GA4 and HubSpot",
+      "White-labelled PDF and slide exports",
+      "Anomaly alerts when a KPI drops",
+      "One-click client share links"
+    ],
+    "customerProblems": [
+      "Manually copying metrics into slides every Monday",
+      "Data living in five tools that never talk to each other",
+      "Clients asking for reports the team has no time to build",
+      "KPI drops being noticed days too late"
+    ],
+    "valueProposition": "Your weekly marketing report writes itself, so you can get back to the work that actually moves numbers.",
+    "uniqueSellingPoints": [
+      "True one-click automation across 4+ data sources",
+      "Client-ready white-labelled output",
+      "Anomaly detection that flags problems before clients ask"
+    ],
+    "differentiators": [
+      "Competitors ship dashboards you still have to format; ReportRover ships the finished report",
+      "Generic BI tools need setup; ReportRover is template-driven for marketing teams"
+    ],
+    "constraints": ["No PCI data handled", "GDPR-bound customer data"],
+    "assumptions": [
+      "Primary users are marketing operations leads, not agencies",
+      "Users already advertise on Meta or Google"
+    ]
+  },
+  "stp": {
+    "segments": [
+      {
+        "id": "in-house-marketing-teams",
+        "label": "In-house marketing teams (20-200 people)",
+        "demographics": ["25-45", "Marketing Ops, Growth, Marketing managers"],
+        "geography": ["US", "UK", "EU"],
+        "psychographics": ["Time-poor", "Accountable to leadership", "Budget-conscious"],
+        "behavior": ["Already running paid ads", "Weekly reporting ritual"],
+        "companySize": ["20-200 employees"],
+        "industry": ["SaaS", "Fintech", "Ecommerce"],
+        "budget": "$79-$499/mo",
+        "technicalMaturity": "medium",
+        "estimatedSize": "~200k companies globally",
+        "notes": "Assumed from the targetMarket input."
+      },
+      {
+        "id": "digital-agencies",
+        "label": "Small digital agencies",
+        "demographics": ["28-50", "Founders, Account managers"],
+        "geography": ["US", "UK", "EU"],
+        "psychographics": ["Client-facing", "Margin-conscious", "Want white-labelling"],
+        "behavior": ["Manage multiple ad accounts", "Deliver monthly reporting"],
+        "companySize": ["2-50 people"],
+        "industry": ["Marketing agencies"],
+        "budget": "$199-$499/mo",
+        "technicalMaturity": "high",
+        "estimatedSize": "~50k agencies globally",
+        "notes": "White-label feature is a strong pull."
+      }
+    ],
+    "segmentScores": [
+      { "segmentId": "in-house-marketing-teams", "weightedScore": 7.8, "rationale": "High fit and easy reach through paid social." },
+      { "segmentId": "digital-agencies", "weightedScore": 6.8, "rationale": "Strong white-label pull but smaller total market." }
+    ],
+    "targetedSegments": [
+      { "segmentId": "in-house-marketing-teams", "priority": "primary", "justification": "Best product fit and reachable via paid social." },
+      { "segmentId": "digital-agencies", "priority": "secondary", "justification": "Good fit, cheap expansion channel." }
+    ],
+    "positioning": {
+      "positioningStatement": "For in-house marketing teams who hate Monday reporting, ReportRover is the reporting tool that turns five data sources into a client-ready report automatically, because it ships finished output instead of raw dashboards.",
+      "valueProposition": "Your weekly marketing report writes itself, so you can get back to the work that actually moves numbers.",
+      "brandPromise": "Never hand-build a weekly report again.",
+      "keyDifferentiators": [
+        "Delivers the finished report, not another dashboard to format",
+        "Connects Meta, Google Ads, GA4 and HubSpot out of the box",
+        "Flags KPI anomalies before your boss asks"
+      ],
+      "messagingPillars": [
+        { "pillar": "Save the hours", "description": "Reporting that used to take half a Monday now takes zero." },
+        { "pillar": "Never get caught off-guard", "description": "Anomaly alerts catch KPI drops early." },
+        { "pillar": "Look good to the boss", "description": "Client-ready, white-labelled output every week." }
+      ],
+      "toneOfVoice": "Confident, practical, zero jargon."
+    },
+    "rationale": "In-house marketing team is the beachhead; agencies second act; enterprise deferred."
+  },
+  "personas": [
+    {
+      "id": "growth-lead-priya",
+      "name": "Priya Sharma",
+      "role": "Marketing Operations Lead",
+      "archetype": "Pragmatic operator",
+      "segmentId": "in-house-marketing-teams",
+      "company": "Looply (41-person B2B SaaS)",
+      "companySize": "41 employees",
+      "location": "Austin, TX",
+      "goals": ["Ship a clean weekly report to the CMO every Monday by 9am", "Cut time spent on manual reporting in half"],
+      "frustrations": ["Copying numbers between tools", "Formatting slides no one reads"],
+      "painPoints": ["Reporting eats 6-8 hours of her week", "Data lives in four disconnected tools"],
+      "motivations": ["Wants to be the ops hero who fixes reporting", "Wants visibility from clean, punctual reports"],
+      "buyingTriggers": ["CMO asks why a campaign tanked", "The quarterly reporting crunch arrives"],
+      "objections": ["Another tool to learn", "Will it match what my agency sends me?", "Is our data safe?"],
+      "decisionCriteria": ["Time to first report", "Data-source integrations", "Export formats", "Price versus hours saved"],
+      "preferredChannels": ["linkedin", "youtube", "google", "email", "meta"],
+      "preferredContent": ["webinar", "case-study", "demo", "video", "newsletter"],
+      "influenceMap": ["CMO", "Marketing peers in Slack communities", "G2 reviews"],
+      "summary": "Priya keeps marketing running at a 41-person SaaS company and rebuilds the same deck from four tools every Monday."
+    },
+    {
+      "id": "agency-founder-marcus",
+      "name": "Marcus Chen",
+      "role": "Founder & Account Director",
+      "archetype": "Margin optimizer",
+      "segmentId": "digital-agencies",
+      "company": "Chen & Co Media (12-person agency)",
+      "companySize": "12 employees",
+      "location": "London, UK",
+      "goals": ["Deliver white-labelled monthly reports to 8 clients", "Cut the 20 hours a month his team spends on client decks"],
+      "frustrations": ["Client decks that take two evenings each", "Junior staff formatting reports"],
+      "painPoints": ["Reporting is his lowest-margin, highest-burn activity", "Every client report is rebuilt from scratch"],
+      "motivations": ["Wants to look polished and data-driven to retain clients", "Wants his seniors back on strategy work"],
+      "buyingTriggers": ["Signing a new retainer client", "Renewal season"],
+      "objections": ["Will white-label output really look like ours?", "Per-client cost adds up"],
+      "decisionCriteria": ["White-labelling quality", "Multi-account support", "Per-client pricing", "Ease of onboarding"],
+      "preferredChannels": ["meta", "linkedin", "google", "email"],
+      "preferredContent": ["case-study", "demo", "video", "comparison"],
+      "influenceMap": ["His account managers", "Agency-owner peers"],
+      "summary": "Marcus runs a 12-person agency where reporting quietly burns the most hours."
+    }
+  ],
+  "buyerJourney": [
+    {
+      "personaId": "growth-lead-priya",
+      "personaName": "Priya Sharma",
+      "awareness": {
+        "stage": "awareness",
+        "problems": ["Weekly reporting takes her 6-8 hours", "Numbers live across four disconnected tools"],
+        "questions": ["Is there a tool that builds these reports for me?", "Can automation really handle multiple ad platforms?"],
+        "contentNeeds": [{ "type": "video", "topic": "How to automate a weekly marketing report", "goal": "Show the pain is solvable" }],
+        "channels": ["meta", "youtube", "linkedin", "google"],
+        "kpis": ["Video views", "Landing page visits"]
+      },
+      "consideration": {
+        "stage": "consideration",
+        "problems": ["Six reporting tools to compare", "Doubts the integrations actually work"],
+        "questions": ["Does ReportRover connect Meta and GA4 without custom setup?", "What do real teams say in reviews?"],
+        "contentNeeds": [{ "type": "case-study", "topic": "How a 40-person team automated Monday reporting", "goal": "Prove it works" }],
+        "channels": ["linkedin", "google", "email"],
+        "kpis": ["Demo requests", "Case study reads"],
+        "evaluationCriteria": ["Time to first report", "Quality of integrations", "Export formats", "Price vs hours saved"],
+        "competitors": ["Google Looker Studio", "Databox", "in-house spreadsheets"],
+        "trustSignals": ["G2 reviews", "Customer logos", "SOC2 / GDPR statements", "Free trial with no credit card"],
+        "requiredInformation": ["Supported data sources", "Pricing tiers", "A sample exported report"]
+      },
+      "decision": {
+        "stage": "decision",
+        "objections": ["Another tool to learn", "Will my agency's numbers match?", "Is our data safe?"],
+        "purchaseTriggers": ["The quarterly reporting crunch starts", "The free trial shows a finished report in under an hour"],
+        "cta": "Start your 14-day free trial",
+        "channels": ["google", "email", "meta"],
+        "kpis": ["Trial starts", "Paid conversion rate"]
+      },
+      "retention": { "stage": "retention", "followUp": ["Onboarding checklist", "Weekly report email", "Success call day 7"], "upsellOpportunities": ["Scale tier"], "channels": ["email", "community"] },
+      "advocacy": { "stage": "advocacy", "referralOpportunities": ["Referral program", "Case study"], "reviews": ["G2 review at day 30"], "communityEngagement": ["Marketing ops Slack community"] }
+    },
+    {
+      "personaId": "agency-founder-marcus",
+      "personaName": "Marcus Chen",
+      "awareness": { "stage": "awareness", "problems": ["Client decks eat two evenings a week"], "questions": ["Can a tool white-label reports for clients?"], "contentNeeds": [{ "type": "case-study", "topic": "How agencies cut client reporting time 80%", "goal": "Show the agency win" }], "channels": ["meta", "linkedin"], "kpis": ["Video views", "Lead form fills"] },
+      "consideration": { "stage": "consideration", "problems": ["Comparing white-label quality", "Cost per client account"], "questions": ["Does white-label really look like my agency?"], "contentNeeds": [{ "type": "demo", "topic": "White-labelled agency report walkthrough", "goal": "Show the finished product" }], "channels": ["linkedin", "google", "email"], "kpis": ["Demo requests"], "evaluationCriteria": ["White-label quality", "Multi-account support", "Per-client pricing"], "competitors": ["Agency analytics suites", "in-house templates"], "trustSignals": ["Agency case studies", "White-label sample", "Free trial"] },
+      "decision": { "stage": "decision", "objections": ["Switching costs mid-quarter", "Per-client price adds up"], "purchaseTriggers": ["Signing a new retainer client"], "cta": "Book a demo", "channels": ["google", "email", "meta"], "kpis": ["Demo requests", "Paid conversion rate"] },
+      "retention": { "stage": "retention", "followUp": ["Onboarding call", "Client account onboarding checklist"], "upsellOpportunities": ["Scale tier"], "channels": ["email", "community"] },
+      "advocacy": { "stage": "advocacy", "referralOpportunities": ["Agency referral network"], "reviews": ["G2 listing"], "communityEngagement": ["Agency-owner Slack group"] }
+    }
+  ],
+  "smartObjectives": [
+    {
+      "id": "awareness-meta-reach",
+      "objective": "Grow Meta+YouTube reach to 250,000 in-house marketing decision-makers within 60 days.",
+      "specific": "Reach 250k unique impressions among marketing ops and growth audiences in the US and UK.",
+      "measurable": "Meta Ads Manager reach and frequency reporting, summed weekly.",
+      "achievable": "A $4,500/mo awareness budget at a blended CPM of ~$18 reaches ~250k uniques in 60 days.",
+      "relevant": "Reach feeds the whole funnel.",
+      "timeBound": "Within 60 days of launch",
+      "kpi": "Unique reach",
+      "baseline": "0 (new product launch)",
+      "targetValue": "250,000 unique users",
+      "deadline": "Day 60",
+      "funnelStage": "awareness",
+      "measurementMethod": "Meta Ads Manager + YouTube Analytics",
+      "reasoning": "Priya discovers products on Meta and YouTube.",
+      "smartCheck": { "specific": true, "measurable": true, "achievable": true, "relevant": true, "timeBound": true }
+    },
+    {
+      "id": "consideration-demo-requests",
+      "objective": "Generate 120 demo requests from in-house marketing teams within 60 days.",
+      "specific": "120 demo requests, defined as completed 'See a sample report' forms.",
+      "measurable": "Form submissions tracked in the CRM, attributed by UTM.",
+      "achievable": "A 45% Meta + 30% Google mix converting at 1.5% CTR and 8% form rate yields ~120.",
+      "relevant": "Demo requests are the gateway to evaluation.",
+      "timeBound": "By day 60",
+      "kpi": "Demo requests",
+      "targetValue": "120 demo requests",
+      "deadline": "Day 60",
+      "funnelStage": "consideration",
+      "measurementMethod": "CRM lead object + UTM attribution",
+      "reasoning": "Consideration lists demo requests as the key outcome.",
+      "smartCheck": { "specific": true, "measurable": true, "achievable": true, "relevant": true, "timeBound": true }
+    },
+    {
+      "id": "decision-trial-to-paid",
+      "objective": "Reach an 18% trial-to-paid conversion rate by the end of the first quarter.",
+      "specific": "18% of users who start the 14-day free trial convert to a paid plan.",
+      "measurable": "Billing platform conversion report, filtered by trial cohort.",
+      "achievable": "SaaS benchmarks for usage-gated trials sit at 10-25%.",
+      "relevant": "Measures the decision-stage CTA.",
+      "timeBound": "End of Q1",
+      "kpi": "Trial-to-paid rate",
+      "targetValue": "18%",
+      "deadline": "End of Q1",
+      "funnelStage": "decision",
+      "measurementMethod": "Billing platform cohort report",
+      "reasoning": "The decision stage is closed by the free-trial CTA.",
+      "smartCheck": { "specific": true, "measurable": true, "achievable": true, "relevant": true, "timeBound": true }
+    }
+  ],
+  "campaignStrategy": {
+    "summary": "Put the bulk of spend on Meta and YouTube to reach in-house marketing ops leads like Priya with a lead-form campaign, capture in-market demand on Google Search, and run a retargeting engine that re-engages trial users.",
+    "primaryChannels": [
+      { "channel": "meta", "rationale": "Creative-led lead forms suit the 'save the hours' message.", "estimatedShare": 45, "primaryFunnelStage": "awareness", "expectedKpis": ["Reach", "Lead form fills", "CPL"] },
+      { "channel": "google", "rationale": "Catches in-market demand.", "estimatedShare": 30, "primaryFunnelStage": "decision", "expectedKpis": ["Demo requests", "Trial starts", "CPA"] },
+      { "channel": "linkedin", "rationale": "B2B credibility.", "estimatedShare": 15, "primaryFunnelStage": "consideration", "expectedKpis": ["Sponsored content CTR", "Demo requests"] },
+      { "channel": "email", "rationale": "Nurture trial users.", "estimatedShare": 10, "primaryFunnelStage": "decision", "expectedKpis": ["Trial-to-paid conversion"] }
+    ],
+    "campaignRecommendations": [
+      {
+        "id": "meta-ops-hero-leads",
+        "name": "Ops Heroes: Stop Hand-Building Monday Decks",
+        "type": "lead-generation",
+        "primaryFunnelStage": "awareness",
+        "objective": "Turn marketing ops leads into lead-form submissions by dramatising the 6-hour weekly report grind.",
+        "targetPersonaIds": ["growth-lead-priya", "agency-founder-marcus"],
+        "channels": ["meta", "youtube"],
+        "contentMix": [
+          { "type": "video", "topic": "15-second pain hook: the Monday deck grind", "goal": "Stop the scroll" },
+          { "type": "landing-page", "topic": "ReportRover demo report request", "goal": "Capture the lead" }
+        ],
+        "primaryKpi": "Lead form fills",
+        "secondaryKpis": ["Video views", "Landing page visits"],
+        "estimatedEffort": "medium",
+        "estimatedImpact": "high",
+        "duration": "8 weeks"
+      },
+      {
+        "id": "google-demo-demand",
+        "name": "In-Market: Reporting Tools Search",
+        "type": "conversion",
+        "primaryFunnelStage": "decision",
+        "objective": "Capture high-intent searches for marketing reporting automation.",
+        "targetPersonaIds": ["growth-lead-priya"],
+        "channels": ["google"],
+        "contentMix": [{ "type": "demo", "topic": "ReportRover demo", "goal": "Drive the booking" }],
+        "primaryKpi": "Demo requests",
+        "secondaryKpis": ["Trial starts", "CPA"],
+        "estimatedEffort": "low",
+        "estimatedImpact": "high",
+        "duration": "always-on"
+      },
+      {
+        "id": "meta-trial-retargeting",
+        "name": "Trial Reactivation: Finish Your First Report",
+        "type": "retargeting",
+        "primaryFunnelStage": "decision",
+        "objective": "Re-engage visitors and trial signups who did not activate their first report.",
+        "targetPersonaIds": ["growth-lead-priya"],
+        "channels": ["meta", "google"],
+        "contentMix": [{ "type": "social-post", "topic": "You are 5 minutes from your first automated report", "goal": "Re-activate dormant trialists" }],
+        "primaryKpi": "Trial activations",
+        "secondaryKpis": ["Trial-to-paid rate", "CPA"],
+        "estimatedEffort": "low",
+        "estimatedImpact": "medium",
+        "duration": "always-on"
+      }
+    ],
+    "audienceStrategy": {
+      "primaryAudience": "Marketing operations leads and marketing managers at 20-200 person B2B SaaS, fintech, and ecommerce companies in the US and UK who already run paid ads.",
+      "secondaryAudiences": ["Agency founders and account directors at 2-50 person agencies."],
+      "retargetingAudiences": [
+        "Visitors who viewed the pricing or demo page in the last 30 days",
+        "Video viewers who watched 50%+ of the 15-second pain-hook video",
+        "Trial signups who did not activate their first report"
+      ],
+      "lookalikeSeeds": ["Existing ReportRover customers (email list seed)", "Pixel audience of high-intent visitors"]
+    },
+    "creativeDirection": {
+      "keyMessages": [
+        "Your weekly marketing report writes itself.",
+        "Five data sources. Zero slide deck.",
+        "Catch a KPI dip before your boss does."
+      ],
+      "visualStyle": "Clean dashboard-to-finished-report transformation shots; muted navy background with a bright accent.",
+      "storytellingApproach": "Open on the Monday-morning deck grind, cut to the finished white-labelled report, end on the saved-hours payoff.",
+      "doList": ["Show the finished report output", "Lead with the hours-saved number", "Use real data-source logos", "Keep copy under 90 characters"],
+      "dontList": ["No buzzwords", "No feature dumps", "No fake 6-figure revenue claims", "No dark patterns"]
+    },
+    "ctaStrategy": {
+      "primaryCta": "Start your 14-day free trial",
+      "secondaryCtas": ["Book a demo", "See a sample report", "Get pricing"],
+      "ctaHierarchy": "Use 'Start free trial' on all lower-funnel and retargeting ads; use 'See a sample report' for upper-funnel creative."
+    },
+    "budgetAllocation": [
+      { "bucket": "Meta & YouTube (awareness + leads)", "percentage": 45, "rationale": "Primary reach and lead engine." },
+      { "bucket": "Google Search (decision)", "percentage": 30, "rationale": "Captures in-market intent." },
+      { "bucket": "LinkedIn (consideration)", "percentage": 15, "rationale": "B2B credibility." },
+      { "bucket": "Email nurture (retention)", "percentage": 10, "rationale": "Cheapest channel for trial-to-paid." }
+    ],
+    "kpis": [
+      { "name": "Lead form fills", "target": "400 in first 60 days", "measurementCadence": "Weekly", "owner": "Growth" },
+      { "name": "Demo requests", "target": "120 in first 60 days", "measurementCadence": "Weekly", "owner": "Growth" },
+      { "name": "Trial-to-paid rate", "target": "18%", "measurementCadence": "Monthly", "owner": "Marketing" }
+    ],
+    "experiments": [
+      {
+        "id": "exp-vs-beforeafter",
+        "hypothesis": "If upper-funnel video shows the before/after report transformation, then lead-form-fill CTR will improve by 15%.",
+        "metric": "Lead form fill CTR",
+        "successCriteria": "+15% CTR at 95% confidence",
+        "minimumSampleSize": "500 lead-form impressions per variant",
+        "duration": "4 weeks",
+        "channels": ["meta", "youtube"]
+      }
+    ],
+    "risks": [
+      { "risk": "Meta CPM inflation near B2B SaaS audiences", "mitigation": "Cap CPM-based bidding and shift budget to Google if CPA exceeds $60." },
+      { "risk": "Trial users sign up but never activate", "mitigation": "Day-0 onboarding email and the retargeting campaign." }
+    ]
+  }
+}
