@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   CampaignContentRun,
+  GenerationCreditKind,
   Prisma,
   StrategyApprovalStatus,
   WorkflowAccountingStatus,
@@ -22,6 +23,7 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
@@ -47,6 +49,7 @@ export class ContentWorkflowService {
     @InjectQueue(CONTENT_WORKFLOW_QUEUE)
     private readonly queue: Queue<ContentWorkflowJob>,
     private readonly mastra: MastraClient,
+    private readonly generationCredits: GenerationCreditsService,
   ) {}
 
   /**
@@ -95,6 +98,12 @@ export class ContentWorkflowService {
           status: WorkflowRunStatus.PENDING,
         },
       });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.CONTENT_WORKFLOW,
+        contentWorkflowCreditReference(runId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: runId,
@@ -135,6 +144,9 @@ export class ContentWorkflowService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(runId),
+      );
 
       this.logger.error(
         `Could not enqueue content run ${record.id}: ${message}`,
@@ -370,6 +382,12 @@ export class ContentWorkflowService {
       }
     }
 
+    if (run.runId) {
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(run.runId),
+      );
+    }
+
     return this.findOwnedOrFail(userId, id);
   }
 
@@ -387,4 +405,8 @@ export class ContentWorkflowService {
 
     return run;
   }
+}
+
+export function contentWorkflowCreditReference(runId: string): string {
+  return `content-workflow:${runId}`;
 }

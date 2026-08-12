@@ -8,19 +8,25 @@ datasource db {
 }
 
 model User {
-  id                String             @id
-  name              String
-  email             String
-  emailVerified     Boolean            @default(false)
-  image             String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  sessions          Session[]
-  accounts          Account[]
-  projects          Project[]
-  socialConnections SocialConnection[]
-  metaOAuthStates   MetaOAuthState[]
-  subscription      Subscription?
+  id                          String                  @id
+  name                        String
+  email                       String
+  emailVerified               Boolean                 @default(false)
+  image                       String?
+  createdAt                   DateTime                @default(now())
+  updatedAt                   DateTime                @updatedAt
+  generationCreditsUsed       Int                     @default(0)
+  generationCreditLimit       Int                     @default(0)
+  generationCreditPlanCode    String?
+  generationCreditPeriodStart DateTime?
+  generationCreditPeriodEnd   DateTime?
+  sessions                    Session[]
+  accounts                    Account[]
+  projects                    Project[]
+  socialConnections           SocialConnection[]
+  metaOAuthStates             MetaOAuthState[]
+  subscription                Subscription?
+  generationCreditEvents      GenerationCreditEvent[]
 
   @@unique([email])
   @@map("user")
@@ -91,6 +97,9 @@ model Plan {
   // They mirror the Stripe Prices and are the source of truth for billing.
   priceMonthlyCents    Int?
   priceYearlyCents     Int?
+  /// Fixed monthly workflow allowance. One credit starts one strategy,
+  /// content workflow, focused revision, or standalone content generation.
+  generationCredits    Int      @default(0)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -98,6 +107,31 @@ model Plan {
 
   @@index([active])
   @@map("plan")
+}
+
+enum GenerationCreditKind {
+  STRATEGY
+  STRATEGY_SECTION_REVISION
+  CONTENT_WORKFLOW
+  CONTENT_ITEM
+}
+
+/// Immutable reservation for one generation request. The unique reference is
+/// the idempotency guard; `refundedAt` records runs that failed or were
+/// cancelled before producing an output.
+model GenerationCreditEvent {
+  id          String               @id @default(uuid())
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  referenceId String               @unique
+  kind        GenerationCreditKind
+  amount      Int                  @default(1)
+  periodStart DateTime
+  refundedAt  DateTime?
+  createdAt   DateTime             @default(now())
+
+  @@index([userId, createdAt])
+  @@map("generation_credit_event")
 }
 
 /// Live state of one user's Stripe subscription. Mirrors Stripe's subscription

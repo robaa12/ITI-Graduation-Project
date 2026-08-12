@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { GenerationCreditsModule } from '../generation-credits/generation-credits.module';
 import { MastraModule } from '../mastra/mastra.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { WorkflowAccountingModule } from '../workflow-accounting/workflow-accounting.module';
@@ -18,6 +19,7 @@ import { ContentWorkflowService } from './content-workflow.service';
   imports: [
     AuthModule,
     CampaignsModule,
+    GenerationCreditsModule,
     MastraModule,
     // For the ownership check on the strategy a run is built from.
     StrategyModule,

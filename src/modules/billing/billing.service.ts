@@ -12,6 +12,7 @@ import { BillingInterval, SubscriptionStatus } from '@prisma/client';
 import Stripe from 'stripe';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { ChangePlanDto } from './dto/change-plan.dto';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { STRIPE_CLIENT } from './stripe.provider';
@@ -71,6 +72,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly generationCredits: GenerationCreditsService,
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
   ) {}
 
@@ -86,16 +88,41 @@ export class BillingService {
         sortOrder: true,
         priceMonthlyCents: true,
         priceYearlyCents: true,
+        generationCredits: true,
       },
     });
   }
 
+  /** Current monthly generation allowance, including free accounts. */
+  getCreditUsage(userId: string) {
+    return this.generationCredits.getUsage(userId);
+  }
+
   /** The authenticated user's subscription with its plan, or null. */
-  getSubscription(userId: string) {
-    return this.prisma.subscription.findUnique({
+  async getSubscription(userId: string) {
+    const subscription = await this.prisma.subscription.findUnique({
       where: { userId },
       include: { plan: true },
     });
+
+    if (
+      subscription?.status === SubscriptionStatus.INCOMPLETE &&
+      subscription.checkoutSessionId &&
+      !subscription.stripeSubscriptionId
+    ) {
+      const session = await this.retrieveCheckoutSessionOrFail(
+        subscription.checkoutSessionId,
+      );
+      if (session.status === 'complete') {
+        await this.reconcileCompletedCheckout(userId, subscription, session);
+        return this.prisma.subscription.findUnique({
+          where: { userId },
+          include: { plan: true },
+        });
+      }
+    }
+
+    return subscription;
   }
 
   /**
@@ -109,8 +136,13 @@ export class BillingService {
   async createCheckoutSession(
     userId: string,
     dto: CreateCheckoutDto,
-  ): Promise<{ url: string }> {
+  ): Promise<{ url: string | null }> {
     const plan = await this.findActivePlanOrFail(dto.planCode);
+    if (plan.code === 'free') {
+      throw new BadRequestException(
+        'The Free plan is included with every account and does not use checkout',
+      );
+    }
     const billingInterval = toBillingInterval(dto.interval);
     const priceId =
       dto.interval === 'month'
@@ -193,9 +225,15 @@ export class BillingService {
       }
 
       if (pendingSession.status === 'complete') {
-        throw new ConflictException(
-          'The previous checkout is complete and is still being processed',
+        await this.reconcileCompletedCheckout(
+          userId,
+          currentSubscription,
+          pendingSession,
         );
+        // The webhook may arrive a little later than the browser redirect.
+        // Reconcile from Stripe here, then safely route the new request through
+        // the normal prorated plan-change flow instead of blocking the user.
+        return this.changePlan(userId, dto);
       }
     }
 
@@ -304,6 +342,11 @@ export class BillingService {
   ): Promise<{ url: string | null }> {
     const subscription = await this.findOwnSubscriptionOrFail(userId);
     const plan = await this.findActivePlanOrFail(dto.planCode);
+    if (plan.code === 'free') {
+      throw new BadRequestException(
+        'Cancel the paid subscription to return to the Free plan',
+      );
+    }
     const billingInterval = toBillingInterval(dto.interval);
     const priceId =
       dto.interval === 'month'
@@ -410,6 +453,49 @@ export class BillingService {
     }
   }
 
+  async previewPlanChange(userId: string, dto: ChangePlanDto) {
+    const subscription = await this.findOwnSubscriptionOrFail(userId);
+    const plan = await this.findActivePlanOrFail(dto.planCode);
+    const priceId =
+      dto.interval === 'month'
+        ? plan.stripeMonthlyPriceId
+        : plan.stripeYearlyPriceId;
+
+    if (!priceId || !subscription.stripeSubscriptionId) {
+      throw new ConflictException(
+        'A live paid subscription is required to preview this change',
+      );
+    }
+
+    try {
+      const current = await this.stripe.subscriptions.retrieve(
+        subscription.stripeSubscriptionId,
+      );
+      const item = current.items.data[0];
+      if (!item) throw new ConflictException('Stripe subscription has no items');
+
+      const preview = await this.stripe.invoices.createPreview({
+        subscription: current.id,
+        subscription_details: {
+          items: [{ id: item.id, price: priceId }],
+          proration_behavior: 'always_invoice',
+        },
+      });
+
+      return {
+        amountDueCents: Math.max(0, preview.total),
+        currency: preview.currency,
+        isCredit: preview.total < 0,
+      };
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      this.logger.error('Failed to preview Stripe plan change', error as Error);
+      throw new ServiceUnavailableException(
+        'Could not calculate the plan difference, please try again',
+      );
+    }
+  }
+
   /**
    * Immediately cancels the Stripe subscription (not at period end) and
    * reflects it in PostgreSQL. The webhook finalizes Stripe state.
@@ -446,6 +532,31 @@ export class BillingService {
     }
 
     return this.getSubscription(userId);
+  }
+
+  async createBillingPortal(userId: string): Promise<{ url: string }> {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { userId },
+      select: { stripeCustomerId: true },
+    });
+    if (!subscription?.stripeCustomerId) {
+      throw new ConflictException(
+        'No billing account exists yet; choose a paid plan first',
+      );
+    }
+
+    try {
+      const portal = await this.stripe.billingPortal.sessions.create({
+        customer: subscription.stripeCustomerId,
+        return_url: `${this.configService.getOrThrow<string>('app.frontendUrl')}/settings#billing`,
+      });
+      return { url: portal.url };
+    } catch (error) {
+      this.logger.error('Failed to create Stripe billing portal', error as Error);
+      throw new ServiceUnavailableException(
+        'Could not open payment settings, please try again',
+      );
+    }
   }
 
   private async findActivePlanOrFail(planCode: string) {
@@ -558,5 +669,62 @@ export class BillingService {
         'Could not verify the pending checkout, please try again',
       );
     }
+  }
+
+  private async reconcileCompletedCheckout(
+    userId: string,
+    local: {
+      planId: string | null;
+      billingInterval: BillingInterval | null;
+    },
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
+    const subscriptionId =
+      typeof session.subscription === 'string'
+        ? session.subscription
+        : session.subscription?.id;
+
+    if (!subscriptionId || !local.planId || !local.billingInterval) {
+      throw new ServiceUnavailableException(
+        'Stripe completed checkout without subscription details; please try again',
+      );
+    }
+
+    let remote: Stripe.Subscription;
+    try {
+      remote = await this.stripe.subscriptions.retrieve(subscriptionId);
+    } catch (error) {
+      this.logger.error(
+        `Could not retrieve completed Stripe subscription ${subscriptionId}`,
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not confirm the completed subscription, please try again',
+      );
+    }
+
+    const priceId = remote.items.data[0]?.price?.id;
+    if (!priceId) {
+      throw new ServiceUnavailableException(
+        'Stripe completed checkout without a subscription price',
+      );
+    }
+
+    await this.prisma.subscription.update({
+      where: { userId },
+      data: {
+        planId: local.planId,
+        billingInterval: local.billingInterval,
+        stripeSubscriptionId: remote.id,
+        stripePriceId: priceId,
+        status: mapSubscriptionStatus(remote.status),
+        currentPeriodStart: currentPeriodStart(remote),
+        currentPeriodEnd: currentPeriodEnd(remote),
+        cancelAtPeriodEnd: remote.cancel_at_period_end,
+        canceledAt: remote.canceled_at
+          ? new Date(remote.canceled_at * 1000)
+          : null,
+      },
+    });
   }
 }

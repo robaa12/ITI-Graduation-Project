@@ -10,6 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  GenerationCreditKind,
   MarketingStrategy,
   Prisma,
   StrategyApprovalStatus,
@@ -22,6 +23,7 @@ import { Queue } from 'bullmq';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
@@ -53,6 +55,7 @@ export class StrategyService {
     @InjectQueue(STRATEGY_QUEUE)
     private readonly queue: Queue<StrategyJob>,
     private readonly mastra: MastraClient,
+    private readonly generationCredits: GenerationCreditsService,
   ) {}
 
   /**
@@ -92,6 +95,12 @@ export class StrategyService {
           status: WorkflowRunStatus.PENDING,
         },
       });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.STRATEGY,
+        strategyCreditReference(runId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: runId,
@@ -134,6 +143,7 @@ export class StrategyService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(strategyCreditReference(runId));
 
       this.logger.error(`Could not enqueue strategy ${record.id}: ${message}`);
       throw new ServiceUnavailableException(
@@ -386,6 +396,12 @@ export class StrategyService {
       if (count === 0) {
         throw new ConflictException(`Strategy ${id} is already being updated`);
       }
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        user.id,
+        GenerationCreditKind.STRATEGY_SECTION_REVISION,
+        strategyRevisionCreditReference(revisionRunId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: revisionRunId,
@@ -434,6 +450,9 @@ export class StrategyService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(
+        strategyRevisionCreditReference(revisionRunId),
+      );
       throw error;
     }
 
@@ -493,6 +512,15 @@ export class StrategyService {
       }
     }
 
+    if (strategy.runId) {
+      await Promise.all([
+        this.generationCredits.refund(strategyCreditReference(strategy.runId)),
+        this.generationCredits.refund(
+          strategyRevisionCreditReference(strategy.runId),
+        ),
+      ]);
+    }
+
     return this.findOwnedOrFail(userId, id);
   }
 
@@ -511,4 +539,12 @@ export class StrategyService {
 
     return strategy;
   }
+}
+
+export function strategyCreditReference(runId: string): string {
+  return `strategy:${runId}`;
+}
+
+export function strategyRevisionCreditReference(runId: string): string {
+  return `strategy-revision:${runId}`;
 }

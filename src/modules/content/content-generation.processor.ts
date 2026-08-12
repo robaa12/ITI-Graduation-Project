@@ -11,6 +11,7 @@ import {
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import {
   CONTENT_GENERATION_QUEUE,
   ContentGenerationJob,
@@ -21,6 +22,7 @@ import type {
   ContentGeneratorPort,
   GeneratedContentDraft,
 } from './generator/content-generator.port';
+import { contentCreditReference } from './content.service';
 
 type ContentWithContext = GeneratedContent & {
   campaign: Campaign & { project: Project };
@@ -40,6 +42,7 @@ export class ContentGenerationProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     @Inject(CONTENT_GENERATOR)
     private readonly generator: ContentGeneratorPort,
+    private readonly generationCredits: GenerationCreditsService,
   ) {
     super();
   }
@@ -147,6 +150,11 @@ export class ContentGenerationProcessor extends WorkerHost {
         this.logger.log(
           `Not recording failure for content ${contentId}: job revision ` +
             `${revision} is superseded or the row is gone`,
+        );
+      }
+      if (count > 0) {
+        await this.generationCredits.refund(
+          contentCreditReference(contentId, revision),
         );
       }
     } catch {

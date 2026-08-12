@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  GenerationCreditKind,
   GeneratedContent,
   GeneratedContentStatus,
   Prisma,
@@ -14,6 +15,7 @@ import { Queue } from 'bullmq';
 import { hasAnyValue } from '../../common/has-any-value';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { ContentExportService, ExportedFile } from './content-export.service';
 import {
   CONTENT_GENERATION_QUEUE,
@@ -31,6 +33,7 @@ export class ContentService {
     private readonly prisma: PrismaService,
     private readonly campaignsService: CampaignsService,
     private readonly exportService: ContentExportService,
+    private readonly generationCredits: GenerationCreditsService,
     @InjectQueue(CONTENT_GENERATION_QUEUE)
     private readonly queue: Queue<ContentGenerationJob>,
   ) {}
@@ -80,20 +83,43 @@ export class ContentService {
   ): Promise<GeneratedContent> {
     await this.campaignsService.findOwnedOrFail(userId, campaignId);
 
-    const record = await this.prisma.generatedContent.create({
-      data: {
-        campaignId,
-        type: dto.type,
-        prompt: dto.instructions,
-        status: GeneratedContentStatus.PENDING,
-        // No successful generation yet; the worker bumps this to 1 when the
-        // agent delivers, so `version` always counts real outputs.
-        version: 0,
-        generationRevision: 1,
-      },
+    const record = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.generatedContent.create({
+        data: {
+          campaignId,
+          type: dto.type,
+          prompt: dto.instructions,
+          status: GeneratedContentStatus.PENDING,
+          // No successful generation yet; the worker bumps this to 1 when the
+          // agent delivers, so `version` always counts real outputs.
+          version: 0,
+          generationRevision: 1,
+        },
+      });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.CONTENT_ITEM,
+        contentCreditReference(created.id, created.generationRevision),
+      );
+      return created;
     });
 
-    await this.enqueue(record.id, record.generationRevision, false);
+    try {
+      await this.enqueue(record.id, record.generationRevision, false);
+    } catch (error) {
+      await this.prisma.generatedContent.updateMany({
+        where: { id: record.id, generationRevision: record.generationRevision },
+        data: {
+          status: GeneratedContentStatus.FAILED,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+      await this.generationCredits.refund(
+        contentCreditReference(record.id, record.generationRevision),
+      );
+      throw error;
+    }
 
     return record;
   }
@@ -193,21 +219,44 @@ export class ContentService {
     const existing = await this.findOwnedOrFail(userId, id);
     const instructions = dto.instructions ?? existing.prompt ?? undefined;
 
-    const record = await this.prisma.generatedContent.update({
-      where: { id },
-      data: {
-        status: GeneratedContentStatus.PENDING,
-        prompt: instructions,
-        error: null,
-        generationRevision: { increment: 1 },
-      },
+    const record = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.generatedContent.update({
+        where: { id },
+        data: {
+          status: GeneratedContentStatus.PENDING,
+          prompt: instructions,
+          error: null,
+          generationRevision: { increment: 1 },
+        },
+      });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.CONTENT_ITEM,
+        contentCreditReference(updated.id, updated.generationRevision),
+      );
+      return updated;
     });
 
-    await this.enqueue(
-      id,
-      record.generationRevision,
-      dto.usePrevious !== false,
-    );
+    try {
+      await this.enqueue(
+        id,
+        record.generationRevision,
+        dto.usePrevious !== false,
+      );
+    } catch (error) {
+      await this.prisma.generatedContent.updateMany({
+        where: { id, generationRevision: record.generationRevision },
+        data: {
+          status: GeneratedContentStatus.FAILED,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+      await this.generationCredits.refund(
+        contentCreditReference(id, record.generationRevision),
+      );
+      throw error;
+    }
 
     return record;
   }
@@ -257,4 +306,8 @@ export class ContentService {
       },
     );
   }
+}
+
+export function contentCreditReference(id: string, revision: number): string {
+  return `content-item:${id}:r${revision}`;
 }

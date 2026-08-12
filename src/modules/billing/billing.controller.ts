@@ -32,6 +32,13 @@ export class BillingController {
     return this.billingService.getSubscription(user.id);
   }
 
+  /** Remaining workflow credits for the signed-in user's current entitlement. */
+  @Get('usage')
+  @UseGuards(AuthGuard)
+  getCreditUsage(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.getCreditUsage(user.id);
+  }
+
   /** Starts Stripe Checkout (subscription mode) for the given plan code. */
   @Post('checkout')
   @HttpCode(201)
@@ -41,6 +48,17 @@ export class BillingController {
     @Body() dto: CreateCheckoutDto,
   ) {
     return this.billingService.createCheckoutSession(user.id, dto);
+  }
+
+  /** Upgrades or downgrades with immediate invoicing and pending payment. */
+  @Post('plan/preview')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  previewPlanChange(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ChangePlanDto,
+  ) {
+    return this.billingService.previewPlanChange(user.id, dto);
   }
 
   /** Upgrades or downgrades with immediate invoicing and pending payment. */
@@ -59,5 +77,13 @@ export class BillingController {
   @UseGuards(AuthGuard)
   async cancel(@CurrentUser() user: AuthenticatedUser) {
     return this.billingService.cancelSubscription(user.id);
+  }
+
+  /** Opens Stripe's customer portal for payment methods and invoices. */
+  @Post('portal')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  openPortal(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.createBillingPortal(user.id);
   }
 }

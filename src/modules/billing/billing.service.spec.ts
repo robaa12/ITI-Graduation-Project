@@ -28,9 +28,10 @@ describe('BillingService', () => {
     };
   };
   let stripe: {
+    billingPortal: { sessions: { create: jest.Mock } };
     checkout: { sessions: { create: jest.Mock; retrieve: jest.Mock } };
     customers: { create: jest.Mock };
-    invoices: { retrieve: jest.Mock };
+    invoices: { createPreview: jest.Mock; retrieve: jest.Mock };
     subscriptions: {
       cancel: jest.Mock;
       retrieve: jest.Mock;
@@ -38,6 +39,7 @@ describe('BillingService', () => {
     };
   };
   let config: { getOrThrow: jest.Mock };
+  let generationCredits: { getUsage: jest.Mock };
 
   const USER = { id: 'user-1', email: 'user@example.com', name: 'Test User' };
 
@@ -54,9 +56,10 @@ describe('BillingService', () => {
     };
 
     stripe = {
+      billingPortal: { sessions: { create: jest.fn() } },
       checkout: { sessions: { create: jest.fn(), retrieve: jest.fn() } },
       customers: { create: jest.fn() },
-      invoices: { retrieve: jest.fn() },
+      invoices: { createPreview: jest.fn(), retrieve: jest.fn() },
       subscriptions: {
         cancel: jest.fn(),
         retrieve: jest.fn(),
@@ -65,6 +68,7 @@ describe('BillingService', () => {
     };
 
     config = { getOrThrow: jest.fn() };
+    generationCredits = { getUsage: jest.fn() };
 
     config.getOrThrow
       .mockReturnValueOnce('http://localhost:5173/billing?success=1')
@@ -74,7 +78,64 @@ describe('BillingService', () => {
       });
 
     // @ts-expect-error test double with only the members under test
-    service = new BillingService(prisma, config, stripe);
+    service = new BillingService(prisma, config, generationCredits, stripe);
+  });
+
+  describe('getSubscription', () => {
+    it('reconciles a completed Checkout immediately when its webhook is delayed', async () => {
+      prisma.subscription.findUnique
+        .mockResolvedValueOnce({
+          userId: 'user-1',
+          planId: 'plan-1',
+          plan: { id: 'plan-1', code: 'pro', name: 'Pro' },
+          billingInterval: BillingInterval.MONTHLY,
+          checkoutSessionId: 'cs_complete',
+          stripeSubscriptionId: null,
+          status: SubscriptionStatus.INCOMPLETE,
+        })
+        .mockResolvedValueOnce({
+          userId: 'user-1',
+          planId: 'plan-1',
+          plan: { id: 'plan-1', code: 'pro', name: 'Pro' },
+          stripeSubscriptionId: 'sub_live',
+          status: SubscriptionStatus.ACTIVE,
+        });
+      stripe.checkout.sessions.retrieve.mockResolvedValue({
+        id: 'cs_complete',
+        status: 'complete',
+        subscription: 'sub_live',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_live',
+        status: 'active',
+        cancel_at_period_end: false,
+        canceled_at: null,
+        items: {
+          data: [
+            {
+              price: { id: 'price_monthly' },
+              current_period_start: 1_700_000_000,
+              current_period_end: 1_702_592_000,
+            },
+          ],
+        },
+      });
+
+      await expect(service.getSubscription('user-1')).resolves.toEqual(
+        expect.objectContaining({
+          stripeSubscriptionId: 'sub_live',
+          status: SubscriptionStatus.ACTIVE,
+        }),
+      );
+      expect(prisma.subscription.update).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        data: expect.objectContaining({
+          stripeSubscriptionId: 'sub_live',
+          stripePriceId: 'price_monthly',
+          status: SubscriptionStatus.ACTIVE,
+        }),
+      });
+    });
   });
 
   describe('listPlans', () => {
@@ -87,6 +148,7 @@ describe('BillingService', () => {
           sortOrder: 2,
           priceMonthlyCents: 1500,
           priceYearlyCents: 15000,
+          generationCredits: 60,
         },
         {
           code: 'basic',
@@ -95,6 +157,7 @@ describe('BillingService', () => {
           sortOrder: 1,
           priceMonthlyCents: null,
           priceYearlyCents: null,
+          generationCredits: 0,
         },
       ];
       prisma.plan.findMany.mockResolvedValue(planRows);
@@ -110,11 +173,70 @@ describe('BillingService', () => {
           sortOrder: true,
           priceMonthlyCents: true,
           priceYearlyCents: true,
+          generationCredits: true,
         },
       });
       expect(Object.keys(planRows[0]).some((k) => k.includes('Price'))).toBe(
         false,
       );
+    });
+  });
+
+  describe('createBillingPortal', () => {
+    it('opens Stripe payment settings for the authenticated customer', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+      });
+      config.getOrThrow.mockReset().mockReturnValue('http://localhost:5173');
+      stripe.billingPortal.sessions.create.mockResolvedValue({
+        url: 'https://billing.stripe.com/session/123',
+      });
+
+      await expect(service.createBillingPortal('user-1')).resolves.toEqual({
+        url: 'https://billing.stripe.com/session/123',
+      });
+      expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
+        customer: 'cus_123',
+        return_url: 'http://localhost:5173/settings#billing',
+      });
+    });
+  });
+
+  describe('previewPlanChange', () => {
+    it('returns only the Stripe-calculated prorated difference', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        stripeSubscriptionId: 'sub_pro',
+      });
+      prisma.plan.findFirst.mockResolvedValue({
+        stripeMonthlyPriceId: 'price_business_monthly',
+        stripeYearlyPriceId: 'price_business_yearly',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_pro',
+        items: { data: [{ id: 'si_pro', price: { id: 'price_pro' } }] },
+      });
+      stripe.invoices.createPreview.mockResolvedValue({
+        total: 2499,
+        currency: 'usd',
+      });
+
+      await expect(
+        service.previewPlanChange('user-1', {
+          planCode: 'business',
+          interval: 'month',
+        }),
+      ).resolves.toEqual({
+        amountDueCents: 2499,
+        currency: 'usd',
+        isCredit: false,
+      });
+      expect(stripe.invoices.createPreview).toHaveBeenCalledWith({
+        subscription: 'sub_pro',
+        subscription_details: {
+          items: [{ id: 'si_pro', price: 'price_business_monthly' }],
+          proration_behavior: 'always_invoice',
+        },
+      });
     });
   });
 
@@ -248,6 +370,51 @@ describe('BillingService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
 
       expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+
+    it('reconciles a completed checkout and continues a requested upgrade', async () => {
+      prisma.plan.findFirst.mockResolvedValue(PLAN);
+      prisma.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-pro',
+        billingInterval: BillingInterval.MONTHLY,
+        checkoutSessionId: 'cs_complete',
+        stripeSubscriptionId: null,
+        status: SubscriptionStatus.INCOMPLETE,
+      });
+      stripe.checkout.sessions.retrieve.mockResolvedValue({
+        id: 'cs_complete',
+        status: 'complete',
+        subscription: 'sub_pro',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_pro',
+        status: 'active',
+        cancel_at_period_end: false,
+        canceled_at: null,
+        items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+      });
+      const changePlan = jest
+        .spyOn(service, 'changePlan')
+        .mockResolvedValue({ url: 'https://invoice.stripe.com/upgrade' });
+
+      await expect(
+        service.createCheckoutSession('user-1', {
+          planCode: 'business',
+          interval: 'month',
+        }),
+      ).resolves.toEqual({ url: 'https://invoice.stripe.com/upgrade' });
+
+      expect(prisma.subscription.update).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        data: expect.objectContaining({
+          stripeSubscriptionId: 'sub_pro',
+          status: SubscriptionStatus.ACTIVE,
+        }),
+      });
+      expect(changePlan).toHaveBeenCalledWith('user-1', {
+        planCode: 'business',
+        interval: 'month',
+      });
     });
 
     it('rejects an unknown plan', async () => {
