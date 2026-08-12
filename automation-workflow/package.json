@@ -1,0 +1,30 @@
+{
+  "name": "automation-workflow",
+  "version": "1.0.0",
+  "description": "Standalone demo: a Meta (Facebook & Instagram) Ads campaign planner driven by the Meta Ads MCP in dry-run mode.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "mastra dev",
+    "build": "mastra build",
+    "start": "mastra start",
+    "auth:meta": "node --env-file=.env scripts/auth-meta.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0 <23"
+  },
+  "dependencies": {
+    "@mastra/core": "1.57.0",
+    "@mastra/duckdb": "1.6.0",
+    "@mastra/libsql": "1.19.0",
+    "@mastra/mcp": "^1.15.1",
+    "@mastra/memory": "1.26.0",
+    "@mastra/observability": "1.16.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "mastra": "1.23.0",
+    "typescript": "^6.0.3"
+  }
+}
