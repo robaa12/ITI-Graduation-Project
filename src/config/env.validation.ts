@@ -21,6 +21,7 @@ export const validationSchema = Joi.object({
   MASTRA_TIMEOUT_MS: Joi.number().default(900000),
   RAG_ENABLED: Joi.boolean().default(false),
   MASTRA_INTERNAL_TOKEN: Joi.string().min(24).required(),
+  WORKFLOW_TIME_ZONE: Joi.string().default('Africa/Cairo'),
 
   META_APP_ID: Joi.string().optional(),
   META_APP_SECRET: Joi.string().optional(),

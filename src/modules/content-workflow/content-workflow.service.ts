@@ -21,6 +21,7 @@ import {
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
+import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
@@ -65,17 +66,29 @@ export class ContentWorkflowService {
     campaignId: string,
     body: Record<string, unknown>,
   ): Promise<CampaignContentRun> {
-    await this.campaignsService.findOwnedOrFail(userId, campaignId);
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      userId,
+      campaignId,
+    );
 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    const { strategyId, input } = await this.buildInput(
+    const { strategyId, input: untrustedInput } = await this.buildInput(
       userId,
       campaignId,
       body,
     );
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const input = { ...untrustedInput, temporalContext };
 
     validateContentWorkflowInput(input);
 

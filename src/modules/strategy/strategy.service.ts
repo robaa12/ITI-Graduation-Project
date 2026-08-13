@@ -21,6 +21,7 @@ import {
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
+import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
@@ -71,13 +72,26 @@ export class StrategyService {
     campaignId: string,
     input: Record<string, unknown>,
   ): Promise<MarketingStrategy> {
-    await this.campaignsService.findOwnedOrFail(userId, campaignId);
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      userId,
+      campaignId,
+    );
 
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    if (jsonByteLength(input) > MAX_WORKFLOW_INPUT_BYTES) {
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const authoritativeInput = { ...input, temporalContext };
+
+    if (jsonByteLength(authoritativeInput) > MAX_WORKFLOW_INPUT_BYTES) {
       throw new BadRequestException(
         `Workflow input must serialise to at most ${MAX_WORKFLOW_INPUT_BYTES} bytes`,
       );
@@ -91,7 +105,7 @@ export class StrategyService {
         data: {
           campaignId,
           runId,
-          input: input as Prisma.InputJsonValue,
+          input: authoritativeInput as Prisma.InputJsonValue,
           status: WorkflowRunStatus.PENDING,
         },
       });
@@ -368,10 +382,24 @@ export class StrategyService {
       );
     }
 
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      user.id,
+      strategy.campaignId,
+    );
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
     const revisionInput = {
       strategy: strategy.output,
       section: dto.section,
       feedback: dto.feedback.trim(),
+      temporalContext,
     };
 
     const revisionRunId = randomUUID();

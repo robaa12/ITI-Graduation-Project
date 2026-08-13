@@ -31,7 +31,11 @@ Project knowledge is opt-in. Set `RAG_ENABLED=true` and a unique
 `MASTRA_INTERNAL_TOKEN` (at least 24 characters) in both this service and
 `marketing_demo`; then run the committed Prisma migrations and the
 `project-knowledge` BullMQ worker with Redis available. Source indexing is
-asynchronous, and only `READY` sources are eligible for retrieval.
+asynchronous, and only `READY` sources are eligible for retrieval. Each new
+marketing-strategy or content-creation run automatically retrieves from the
+owned project's ready sources and supplies the resulting excerpts to the
+workflow as untrusted reference material; the browser cannot select another
+project's sources.
 
 Website sources are restricted to public HTTP(S) hosts, DNS-resolved before
 each request, kept on the submitted host after redirects, checked against
