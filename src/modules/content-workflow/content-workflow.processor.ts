@@ -8,6 +8,7 @@ import {
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildKnowledgeScope } from '../../common/knowledge-scope';
 import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
@@ -89,7 +90,14 @@ export class ContentWorkflowProcessor extends WorkerHost {
         projectId: run.campaign.projectId,
         status: KnowledgeSourceStatus.READY,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        url: true,
+        indexedAt: true,
+        metadata: true,
+      },
     });
 
     const result = resume
@@ -104,10 +112,10 @@ export class ContentWorkflowProcessor extends WorkerHost {
           run.runId,
           {
             ...(run.input as Record<string, unknown>),
-            knowledgeScope: {
-              projectId: run.campaign.projectId,
-              sourceIds: readySources.map((source) => source.id),
-            },
+            knowledgeScope: buildKnowledgeScope(
+              run.campaign.projectId,
+              readySources,
+            ),
             ...(run.campaign.project.brandProfile
               ? { brandProfile: run.campaign.project.brandProfile }
               : {}),

@@ -8,6 +8,7 @@ import {
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildKnowledgeScope } from '../../common/knowledge-scope';
 import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
@@ -91,7 +92,14 @@ export class StrategyProcessor extends WorkerHost {
         projectId: strategy.campaign.projectId,
         status: KnowledgeSourceStatus.READY,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        url: true,
+        indexedAt: true,
+        metadata: true,
+      },
     });
 
     const workflow =
@@ -115,10 +123,10 @@ export class StrategyProcessor extends WorkerHost {
                 ...(strategy.input as Record<string, unknown>),
                 // This value is derived from the owned campaign, never accepted
                 // from a browser, so Mastra retrieval cannot cross project scope.
-                knowledgeScope: {
-                  projectId: strategy.campaign.projectId,
-                  sourceIds: readySources.map((source) => source.id),
-                },
+                knowledgeScope: buildKnowledgeScope(
+                  strategy.campaign.projectId,
+                  readySources,
+                ),
                 ...(strategy.campaign.project.brandProfile
                   ? { brandProfile: strategy.campaign.project.brandProfile }
                   : {}),
