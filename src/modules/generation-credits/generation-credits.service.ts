@@ -49,6 +49,29 @@ const PAYMENT_BLOCKED_STATUSES: SubscriptionStatus[] = [
   SubscriptionStatus.PAUSED,
 ];
 
+/** Every field `syncAllowance` needs to recompute an entitlement. */
+const CREDIT_USER_SELECT = {
+  id: true,
+  generationCreditsUsed: true,
+  generationCreditLimit: true,
+  generationCreditPlanCode: true,
+  generationCreditPeriodStart: true,
+  generationCreditPeriodEnd: true,
+  subscription: {
+    select: {
+      status: true,
+      plan: {
+        select: {
+          code: true,
+          name: true,
+          active: true,
+          generationCredits: true,
+        },
+      },
+    },
+  },
+} as const;
+
 /**
  * Owns the fixed workflow allowance advertised by the pricing plans.
  *
@@ -185,27 +208,7 @@ export class GenerationCreditsService {
   ): Promise<GenerationCreditUsage> {
     const user = await tx.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        generationCreditsUsed: true,
-        generationCreditLimit: true,
-        generationCreditPlanCode: true,
-        generationCreditPeriodStart: true,
-        generationCreditPeriodEnd: true,
-        subscription: {
-          select: {
-            status: true,
-            plan: {
-              select: {
-                code: true,
-                name: true,
-                active: true,
-                generationCredits: true,
-              },
-            },
-          },
-        },
-      },
+      select: CREDIT_USER_SELECT,
     });
     if (!user) throw new NotFoundException('User not found');
 
@@ -239,12 +242,15 @@ export class GenerationCreditsService {
     const now = new Date();
     const periodExpired =
       !user.generationCreditPeriodEnd || user.generationCreditPeriodEnd <= now;
-    const planChanged = user.generationCreditPlanCode !== plan.code;
     const missingPeriod =
       !user.generationCreditPeriodStart || !user.generationCreditPeriodEnd;
+    const planChanged = user.generationCreditPlanCode !== plan.code;
 
     let synced: CreditUser = user;
-    if (periodExpired || planChanged || missingPeriod) {
+    if (periodExpired || missingPeriod) {
+      // A genuine rollover: the allowance starts over on a fresh window. This
+      // also covers a plan change that happens to land on an expired period —
+      // the rollover wins, so the user is never charged twice for the reset.
       const periodStart = now;
       const periodEnd = addOneMonth(periodStart);
       synced = await tx.user.update({
@@ -256,27 +262,24 @@ export class GenerationCreditsService {
           generationCreditPeriodStart: periodStart,
           generationCreditPeriodEnd: periodEnd,
         },
-        select: {
-          id: true,
-          generationCreditsUsed: true,
-          generationCreditLimit: true,
-          generationCreditPlanCode: true,
-          generationCreditPeriodStart: true,
-          generationCreditPeriodEnd: true,
-          subscription: {
-            select: {
-              status: true,
-              plan: {
-                select: {
-                  code: true,
-                  name: true,
-                  active: true,
-                  generationCredits: true,
-                },
-              },
-            },
-          },
+        select: CREDIT_USER_SELECT,
+      });
+    } else if (planChanged) {
+      // Mid-period plan change: top the allowance up to the new plan's ceiling
+      // and leave everything else alone. Resetting `generationCreditsUsed` here
+      // would hand back every credit already spent, so cycling plans would mint
+      // credits for the price of a proration; restarting the period would push
+      // the reset date forward on every switch. Keeping both means an upgrade
+      // grants exactly the difference, and a downgrade below what is already
+      // spent simply leaves nothing remaining (clamped below) until the period
+      // ends on its original date.
+      synced = await tx.user.update({
+        where: { id: userId },
+        data: {
+          generationCreditLimit: Math.max(0, plan.generationCredits),
+          generationCreditPlanCode: plan.code,
         },
+        select: CREDIT_USER_SELECT,
       });
     }
 

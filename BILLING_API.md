@@ -10,14 +10,18 @@ http://localhost:3000
 
 Billing endpoints live below `/api/subscriptions`. Plan listing is public for the pricing page; account-specific endpoints require an authenticated session cookie (see `AUTH_API.md`). The webhook endpoint `/api/stripe/webhook` is public by design — Stripe calls it.
 
-| Method  | Endpoint                      | Purpose                                   | Session required        |
-| ------- | ----------------------------- | ----------------------------------------- | ----------------------- |
-| `GET`   | `/api/subscriptions/plans`    | List purchasable plans                    | No                      |
-| `GET`   | `/api/subscriptions/me`       | The current user's subscription           | Yes                     |
-| `POST`  | `/api/subscriptions/checkout` | Start Stripe Checkout (subscription mode) | Yes                     |
-| `PATCH` | `/api/subscriptions/plan`     | Upgrade/downgrade the current plan        | Yes                     |
-| `POST`  | `/api/subscriptions/cancel`   | Cancel immediately                        | Yes                     |
-| `POST`  | `/api/stripe/webhook`         | Stripe event delivery                     | No (signature-verified) |
+| Method   | Endpoint                          | Purpose                                   | Session required        |
+| -------- | --------------------------------- | ----------------------------------------- | ----------------------- |
+| `GET`    | `/api/subscriptions/plans`        | List purchasable plans                    | No                      |
+| `GET`    | `/api/subscriptions/me`           | The current user's subscription           | Yes                     |
+| `GET`    | `/api/subscriptions/usage`        | Remaining generation credits              | Yes                     |
+| `POST`   | `/api/subscriptions/checkout`     | Start Stripe Checkout (subscription mode) | Yes                     |
+| `POST`   | `/api/subscriptions/plan/preview` | Quote a plan switch without applying it   | Yes                     |
+| `PATCH`  | `/api/subscriptions/plan`         | Upgrade now, or schedule a downgrade      | Yes                     |
+| `DELETE` | `/api/subscriptions/plan/pending` | Undo a scheduled downgrade                | Yes                     |
+| `POST`   | `/api/subscriptions/cancel`       | Cancel immediately                        | Yes                     |
+| `POST`   | `/api/subscriptions/portal`       | Open Stripe's customer portal             | Yes                     |
+| `POST`   | `/api/stripe/webhook`             | Stripe event delivery                     | No (signature-verified) |
 
 ## How pricing is resolved
 
@@ -44,20 +48,37 @@ GET /api/subscriptions/plans
 ```
 
 Returns active plans ordered by `sortOrder`, without internal Stripe Price ids.
+This is the source of truth for prices and allowances; the frontend renders it
+rather than keeping its own copy.
 
 ```json
 [
   {
-    "code": "starter",
-    "name": "Starter",
-    "description": "For individuals",
-    "sortOrder": 1
+    "code": "free",
+    "name": "Free",
+    "description": "Explore the platform with basic limits.",
+    "sortOrder": 1,
+    "priceMonthlyCents": 0,
+    "priceYearlyCents": 0,
+    "generationCredits": 6
   },
   {
     "code": "pro",
     "name": "Pro",
-    "description": "For teams",
-    "sortOrder": 2
+    "description": "For individual professionals who need more.",
+    "sortOrder": 2,
+    "priceMonthlyCents": 1500,
+    "priceYearlyCents": 15000,
+    "generationCredits": 60
+  },
+  {
+    "code": "business",
+    "name": "Business",
+    "description": "For growing teams.",
+    "sortOrder": 3,
+    "priceMonthlyCents": 4000,
+    "priceYearlyCents": 40000,
+    "generationCredits": 240
   }
 ]
 ```
@@ -84,15 +105,52 @@ Returns the authenticated user's subscription with its plan, or `null`.
   "currentPeriodEnd": "2026-09-11T10:00:00.000Z",
   "cancelAtPeriodEnd": false,
   "canceledAt": null,
+  "pendingPlanId": null,
+  "pendingInterval": null,
+  "pendingEffectiveAt": null,
   "plan": {
     "code": "pro",
     "name": "Pro",
     "description": "For teams"
-  }
+  },
+  "pendingPlan": null
 }
 ```
 
-### 3. Start Checkout
+When a downgrade is queued, `pendingPlan` describes what the subscription becomes
+and `pendingEffectiveAt` is when — the UI renders this as "Pro until Sep 12, then
+Lite" alongside an undo action.
+
+### 3. Credit Usage
+
+```http
+GET /api/subscriptions/usage
+```
+
+The allowance behind the plan, and why generation is blocked when it is.
+
+```json
+{
+  "plan": { "code": "pro", "name": "Pro" },
+  "limit": 60,
+  "used": 55,
+  "remaining": 5,
+  "periodStart": "2026-08-12T10:00:00.000Z",
+  "periodEnd": "2026-09-12T10:00:00.000Z",
+  "canGenerate": true,
+  "blockedReason": null
+}
+```
+
+`blockedReason` is `payment_required`, `credits_exhausted`, or `null`.
+
+The credit period is its own rolling month, anchored on the last reset — it is
+deliberately **not** tied to the Stripe billing period. A mid-period plan change
+moves `limit` only: `used`, `periodStart`, and `periodEnd` are preserved, so an
+upgrade grants the difference rather than a second full allowance, and repeatedly
+switching plans cannot mint credits.
+
+### 4. Start Checkout
 
 ```http
 POST /api/subscriptions/checkout
@@ -125,7 +183,7 @@ The browser should be redirected to `url`. The user must be signed in before sta
 
 If the user already has a live (active/trialing/past-due/unpaid) subscription, checkout is rejected with `409` — plan changes use the `PATCH /plan` endpoint instead, which prorates.
 
-If the same user already has an open Checkout Session for the requested plan and interval, the endpoint returns that session's URL. A request for another plan is rejected with `409` until the open Checkout Session is completed or expires. Stripe idempotency keys protect concurrent retries from creating duplicate sessions.
+If the same user already has an open Checkout Session for the requested plan and interval, the endpoint returns that session's URL. When the user selects another plan, the backend expires the stale open Session and creates a fresh Session with the newly requested Price. Stripe idempotency keys protect concurrent retries from creating duplicate sessions.
 
 #### Possible errors
 
@@ -136,7 +194,57 @@ If the same user already has an open Checkout Session for the requested plan and
 | `409`  | User already has a live subscription                              |
 | `503`  | Stripe could not create the session                               |
 
-### 4. Change Plan (Upgrade / Downgrade)
+### 5. Preview a Plan Change
+
+```http
+POST /api/subscriptions/plan/preview
+Content-Type: application/json
+```
+
+Prices the switch without applying anything, and **holds that price** as a
+single-use quote. Because Stripe recomputes proration on every preview call,
+quoting and charging in two separate requests would otherwise let the figure move
+between the two.
+
+```json
+{ "planCode": "business", "interval": "month" }
+```
+
+#### Success response (`200`)
+
+```json
+{
+  "quoteId": "3f7c1a2e-...",
+  "kind": "UPGRADE",
+  "amountDueCents": 833,
+  "currency": "usd",
+  "isCredit": false,
+  "effectiveAt": null,
+  "expiresAt": "2026-08-14T10:15:00.000Z",
+  "breakdown": {
+    "unusedCreditCents": 500,
+    "newPlanChargeCents": 1333
+  },
+  "credits": {
+    "limit": 60,
+    "used": 55,
+    "newLimit": 240,
+    "newRemaining": 185,
+    "periodEnd": "2026-09-12T10:00:00.000Z"
+  }
+}
+```
+
+`kind` is `UPGRADE`, `DOWNGRADE`, or `NOOP` (already on that plan and interval,
+in which case `quoteId` is `null`). `breakdown` explains the total instead of
+asserting it. `credits` projects the allowance so the confirmation screen can say
+"you have used 55 of 60; upgrading leaves you 185 of 240" — credits already spent
+stay spent.
+
+A downgrade quotes `amountDueCents: 0` with `effectiveAt` set to the end of the
+paid period. Quotes expire after 15 minutes.
+
+### 6. Change Plan
 
 ```http
 PATCH /api/subscriptions/plan
@@ -147,41 +255,77 @@ Content-Type: application/json
 
 ```json
 {
-  "planCode": "pro",
-  "interval": "month"
+  "planCode": "business",
+  "interval": "month",
+  "quoteId": "3f7c1a2e-..."
 }
 ```
 
-Same body rules as checkout. The backend immediately invoices prorations with `always_invoice` and uses Stripe pending updates (`pending_if_incomplete`). An upgrade that requires payment is not written to the local subscription until Stripe confirms payment. A payment-free downgrade is applied immediately.
+`quoteId` is optional but recommended: with it the stored amount is charged, so
+the customer pays the figure they were shown. Without it the switch is priced
+fresh at confirmation time.
+
+**Upgrades** (higher tier, or month → year on the same plan) are charged now. The
+backend opens a payment-mode Stripe Checkout Session so payment details are always
+entered on Stripe's hosted page; the `checkout.session.completed` webhook then
+applies the target Price with `proration_behavior: none` — preventing a second
+charge — and raises the credit allowance in the same transaction.
+
+**Downgrades** (lower tier, or year → month) are scheduled for the end of the paid
+period through a Stripe Subscription Schedule. Nothing is invoiced and nothing
+changes today, so the customer keeps the higher plan and its credits for the time
+they already bought. An upgrade releases any queued downgrade.
+
+`planCode: "free"` is not a plan switch — there is no Price to move to — so it
+sets `cancel_at_period_end` instead.
 
 #### Success response (`200`)
 
-When payment is required, the client receives the Stripe-hosted invoice URL:
-
 ```json
 {
-  "url": "https://pay.stripe.com/invoice/..."
+  "url": "https://checkout.stripe.com/c/pay/...",
+  "kind": "UPGRADE",
+  "scheduled": false,
+  "effectiveAt": null
 }
 ```
 
-When the switch is applied without another payment, `url` is `null`:
+For a scheduled downgrade there is nothing to pay, so `url` is `null`:
 
 ```json
 {
-  "url": null
+  "url": null,
+  "kind": "DOWNGRADE",
+  "scheduled": true,
+  "effectiveAt": "2026-09-12T10:00:00.000Z"
 }
 ```
 
 #### Possible errors
 
-| Status | Situation                                               |
-| ------ | ------------------------------------------------------- |
-| `404`  | No subscription exists for this user, or unknown plan   |
-| `400`  | The target plan has no Price for the requested interval |
-| `409`  | Another plan change is already awaiting payment         |
-| `503`  | Stripe could not apply the change                       |
+| Status | Situation                                                                                    |
+| ------ | -------------------------------------------------------------------------------------------- |
+| `400`  | The target plan has no Price for the requested interval                                      |
+| `404`  | No subscription exists for this user, or unknown plan                                        |
+| `409`  | `SUBSCRIPTION_PAYMENT_REQUIRED` — an invoice is unpaid; the body carries `portalRequired`    |
+| `409`  | `PLAN_CHANGE_QUOTE_STALE` — the quote expired or the price moved; the body carries a fresh `quote` to re-confirm |
+| `503`  | Stripe could not calculate or start the plan change                                          |
 
-### 5. Cancel Subscription
+### 7. Undo a Scheduled Downgrade
+
+```http
+DELETE /api/subscriptions/plan/pending
+```
+
+Releases the Stripe schedule and clears the pending columns, leaving the live
+subscription untouched. Returns the refreshed subscription.
+
+| Status | Situation                          |
+| ------ | ---------------------------------- |
+| `409`  | There is no scheduled change to undo |
+| `503`  | Stripe could not release the schedule |
+
+### 8. Cancel Subscription
 
 ```http
 POST /api/subscriptions/cancel
@@ -207,7 +351,7 @@ Cancellation is **immediate** — Stripe subscription is canceled right away (no
 | `409`  | Already cancelled, or no Stripe subscription id |
 | `503`  | Stripe could not cancel                         |
 
-### 6. Stripe Webhook
+### 9. Stripe Webhook
 
 ```http
 POST /api/stripe/webhook
@@ -218,14 +362,22 @@ Stripe calls this endpoint with subscription events. Signature verification is p
 
 Handled events:
 
-| Event                           | Effect                                                     |
-| ------------------------------- | ---------------------------------------------------------- |
-| `checkout.session.completed`    | Attaches the real Stripe subscription id to the user's row |
-| `customer.subscription.created` | Creates/syncs the local subscription row                   |
-| `customer.subscription.updated` | Syncs plan, interval, price, status, periods               |
-| `customer.subscription.deleted` | Marks the local row `CANCELLED`                            |
-| `invoice.payment_succeeded`     | Re-activates / refreshes billing periods                   |
-| `invoice.payment_failed`        | Cancels the matching subscription on a failed renewal      |
+| Event                            | Effect                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `checkout.session.completed`     | Attaches a new subscription, or applies a paid plan change and its credits    |
+| `customer.subscription.created`  | Creates/syncs the local subscription row                                     |
+| `customer.subscription.updated`  | Syncs plan, interval, price, status, periods; resyncs credits if the plan moved |
+| `customer.subscription.paused`   | Mirrors the paused status, which blocks generation                           |
+| `customer.subscription.resumed`  | Restores the active status                                                   |
+| `customer.subscription.deleted`  | Marks the local row `CANCELLED`                                              |
+| `subscription_schedule.released` | Clears a queued plan change that is no longer governed by a schedule          |
+| `subscription_schedule.canceled` | Same                                                                         |
+| `invoice.payment_succeeded`      | Re-activates / refreshes billing periods                                     |
+| `invoice.payment_failed`         | Cancels the matching subscription on a failed renewal                        |
+
+A scheduled downgrade reaching its date arrives as `customer.subscription.updated`
+with the new Price; that handler applies the plan, clears the pending columns, and
+recomputes the allowance — so the lower credit ceiling lands with the lower plan.
 
 All events are idempotent: the event id has a unique index and is recorded before any state change, so duplicate or concurrent deliveries never double-apply.
 
@@ -253,17 +405,29 @@ Example for a `pro` plan:
 
 ### 3. Persist the mapping
 
-Insert one row per plan into the `plan` table with the Price ids from the Dashboard:
+Normally this is done by the seeder, which reads the Stripe ids from environment
+variables so they never land in committed code:
+
+```bash
+STRIPE_PLAN_PRO_PRODUCT_ID=prod_... \
+STRIPE_PLAN_PRO_MONTHLY_PRICE_ID=price_... \
+STRIPE_PLAN_PRO_YEARLY_PRICE_ID=price_... \
+npm run db:seed
+```
+
+`sortOrder` is what ranks a switch as an upgrade or a downgrade, so plans must be
+ordered cheapest to most expensive. To insert by hand:
 
 ```sql
 INSERT INTO "plan"
   ("id", "code", "name", "description", "sortOrder", "active",
-   "stripeProductId", "stripeMonthlyPriceId", "stripeYearlyPriceId", "updatedAt")
+   "stripeProductId", "stripeMonthlyPriceId", "stripeYearlyPriceId",
+   "priceMonthlyCents", "priceYearlyCents", "generationCredits", "updatedAt")
 VALUES
-  (gen_random_uuid()::text, 'starter', 'Starter', 'For individuals', 1, true,
-   'prod_...', 'price_...monthly', 'price_...yearly', now()),
-  (gen_random_uuid()::text, 'pro', 'Pro', 'For teams', 2, true,
-   'prod_...', 'price_...monthly', 'price_...yearly', now());
+  (gen_random_uuid()::text, 'pro', 'Pro', 'For individuals', 2, true,
+   'prod_...', 'price_...monthly', 'price_...yearly', 1500, 15000, 60, now()),
+  (gen_random_uuid()::text, 'business', 'Business', 'For teams', 3, true,
+   'prod_...', 'price_...monthly', 'price_...yearly', 4000, 40000, 240, now());
 ```
 
 ### 4. Webhook signing secret
@@ -273,7 +437,11 @@ VALUES
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`
+   - `customer.subscription.paused`
+   - `customer.subscription.resumed`
    - `customer.subscription.deleted`
+   - `subscription_schedule.released`
+   - `subscription_schedule.canceled`
    - `invoice.payment_succeeded`
    - `invoice.payment_failed`
 3. After saving, reveal the **Signing secret** (`whsec_...`) and put it in `STRIPE_WEBHOOK_SECRET`.
@@ -340,9 +508,18 @@ stripe trigger invoice.payment_failed
 Each `stripe trigger` emits a realistic payload that the local forwarder signs and posts to the endpoint. To verify end-to-end behavior:
 
 1. **Checkout**: open the URL returned by `POST /api/subscriptions/checkout` (a test card — e.g. `4242 4242 4242 4242` — is accepted automatically), complete, and watch the webhook flip the DB row from `INCOMPLETE` to `ACTIVE`.
-2. **Plan change**: after an active subscription exists, `PATCH /api/subscriptions/plan` with a different planCode. The Stripe `subscription.updated` event syncs the new price/interval.
-3. **Cancel**: `POST /api/subscriptions/cancel` marks the row `CANCELLED`; `customer.subscription.deleted` confirms it.
-4. **Failed renewal**: `stripe trigger invoice.payment_failed` cancels the Stripe subscription and removes access locally.
+2. **Upgrade with credits already spent** — the case worth checking by hand:
+   subscribe to Pro, spend most of the allowance (run generations, or set
+   `user.generationCreditsUsed` directly) so `/usage` reads `55` of `60`, then
+   upgrade to Business. Confirm the checkout page shows the breakdown *and* the
+   projection, pay, then verify `/usage` reads `limit 240`, `used 55`,
+   `remaining 185`, with `generationCreditPeriodEnd` **unchanged**. Re-delivering
+   the same event (`stripe events resend <id>`) must not move any of it.
+3. **Downgrade**: `PATCH /api/subscriptions/plan` to a lower plan. Nothing is
+   charged, `/me` reports `pendingPlan` and `pendingEffectiveAt`, and the current
+   credits stay usable. `DELETE /api/subscriptions/plan/pending` undoes it.
+4. **Cancel**: `POST /api/subscriptions/cancel` marks the row `CANCELLED`; `customer.subscription.deleted` confirms it.
+5. **Failed renewal**: `stripe trigger invoice.payment_failed` cancels the Stripe subscription and removes access locally.
 
 ### 4. Test cards
 
@@ -357,3 +534,8 @@ Each `stripe trigger` emits a realistic payload that the local forwarder signs a
 - `SubscriptionEvent.stripeEventId` has a unique index; every delivery is recorded once inside a database transaction with its state change.
 - Duplicate deliveries (Stripe retries, concurrent forward) are skipped, including the race where two deliveries pass the pre-check simultaneously — the unique constraint is caught and treated as already handled.
 - Stripe is the source of truth; local state is mirrored from webhook events, and the webhook endpoint is signature-verified so state cannot be changed by unauthenticated callers.
+- Credit top-ups ride inside the same transaction as the plan change, and only ever
+  set `generationCreditLimit` to the plan's ceiling. Re-running one recomputes the
+  same value, so a duplicate delivery cannot grant a second allowance.
+- `PlanChangeQuote.consumedAt` is set the moment a quote gets a payment attached
+  to it, so two tabs cannot open two Checkouts against the same quoted figure.

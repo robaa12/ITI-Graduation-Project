@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Patch,
@@ -13,11 +14,16 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BillingService } from './billing.service';
 import { ChangePlanDto } from './dto/change-plan.dto';
+import { ConfirmCheckoutDto } from './dto/confirm-checkout.dto';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
+import { StripeWebhookService } from './stripe-webhook.service';
 
 @Controller('subscriptions')
 export class BillingController {
-  constructor(private readonly billingService: BillingService) {}
+  constructor(
+    private readonly billingService: BillingService,
+    private readonly webhookService: StripeWebhookService,
+  ) {}
 
   /** Available SaaS plans. Prices are resolved server-side, never client-side. */
   @Get('plans')
@@ -50,7 +56,24 @@ export class BillingController {
     return this.billingService.createCheckoutSession(user.id, dto);
   }
 
-  /** Upgrades or downgrades with immediate invoicing and pending payment. */
+  /**
+   * Authenticated fallback for a delayed webhook. Stripe is still queried and
+   * ownership/payment are verified before any subscription state is changed.
+   */
+  @Post('checkout/confirm')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  confirmCheckout(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ConfirmCheckoutDto,
+  ) {
+    return this.webhookService.confirmCheckoutReturn(user.id, dto);
+  }
+
+  /**
+   * Prices a plan switch without applying it, and holds that price so the
+   * amount confirmed is the amount charged.
+   */
   @Post('plan/preview')
   @HttpCode(200)
   @UseGuards(AuthGuard)
@@ -61,7 +84,7 @@ export class BillingController {
     return this.billingService.previewPlanChange(user.id, dto);
   }
 
-  /** Upgrades or downgrades with immediate invoicing and pending payment. */
+  /** Upgrades now against a confirmed quote, or schedules a downgrade. */
   @Patch('plan')
   @UseGuards(AuthGuard)
   async changePlan(
@@ -69,6 +92,14 @@ export class BillingController {
     @Body() dto: ChangePlanDto,
   ) {
     return this.billingService.changePlan(user.id, dto);
+  }
+
+  /** Drops a scheduled downgrade, keeping the current plan. */
+  @Delete('plan/pending')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  cancelPendingPlanChange(@CurrentUser() user: AuthenticatedUser) {
+    return this.billingService.cancelPendingPlanChange(user.id);
   }
 
   /** Immediately cancels the current subscription. */

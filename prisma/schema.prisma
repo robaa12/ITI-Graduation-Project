@@ -103,7 +103,9 @@ model Plan {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  subscriptions Subscription[]
+  subscriptions        Subscription[]
+  pendingSubscriptions Subscription[]    @relation("SubscriptionPendingPlan")
+  planChangeQuotes     PlanChangeQuote[]
 
   @@index([active])
   @@map("plan")
@@ -138,28 +140,89 @@ model GenerationCreditEvent {
 /// status so the application can gate access without querying Stripe. Only
 /// identifiers are stored — never card numbers or raw payment credentials.
 model Subscription {
-  id                   String              @id @default(uuid())
-  userId               String              @unique
-  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                   String             @id @default(uuid())
+  userId               String             @unique
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   planId               String?
-  plan                 Plan?               @relation(fields: [planId], references: [id])
-  status               SubscriptionStatus  @default(INCOMPLETE)
+  plan                 Plan?              @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus @default(INCOMPLETE)
   billingInterval      BillingInterval?
-  stripeCustomerId     String?             @unique
-  stripeSubscriptionId String?             @unique
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
   stripePriceId        String?
-  checkoutSessionId    String?             @unique
+  checkoutSessionId    String?            @unique
   currentPeriodStart   DateTime?
   currentPeriodEnd     DateTime?
-  cancelAtPeriodEnd    Boolean             @default(false)
+  cancelAtPeriodEnd    Boolean            @default(false)
   canceledAt           DateTime?
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  events               SubscriptionEvent[]
+
+  /// A downgrade the customer has confirmed but which only takes effect when
+  /// the paid period they already bought runs out. Mirrors the Stripe
+  /// Subscription Schedule in `stripeScheduleId`; both are cleared together
+  /// when the phase transition lands or the customer undoes the change.
+  pendingPlanId      String?
+  pendingPlan        Plan?            @relation("SubscriptionPendingPlan", fields: [pendingPlanId], references: [id])
+  pendingInterval    BillingInterval?
+  pendingEffectiveAt DateTime?
+  stripeScheduleId   String?          @unique
+
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  events    SubscriptionEvent[]
+  quotes    PlanChangeQuote[]
 
   @@index([status])
   @@index([stripeSubscriptionId])
   @@map("subscription")
+}
+
+enum PlanChangeKind {
+  UPGRADE
+  DOWNGRADE
+}
+
+/// A price the customer was shown for a specific plan switch, held so the
+/// amount they confirm is the amount they are charged. Stripe recomputes
+/// proration on every preview call, so quoting and charging in two separate
+/// requests would otherwise let the figure move between the two. Single-use:
+/// `consumedAt` is what stops two parallel confirmations from both spending it.
+model PlanChangeQuote {
+  id             String          @id @default(uuid())
+  subscriptionId String
+  subscription   Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  userId         String
+  kind           PlanChangeKind
+  planId         String
+  plan           Plan            @relation(fields: [planId], references: [id])
+  interval       BillingInterval
+  fromPriceId    String?
+  targetPriceId  String
+
+  /// Net owed now, in minor units. Zero for a scheduled downgrade.
+  amountDueCents Int
+  currency       String
+
+  /// The two halves of `amountDueCents`, kept so the receipt can explain the
+  /// figure instead of asserting it.
+  unusedCreditCents  Int
+  newPlanChargeCents Int
+
+  /// Allowance projection at quote time, so the confirmation screen can show
+  /// what the switch does to credits without recomputing it client-side.
+  creditsLimit    Int
+  creditsUsed     Int
+  creditsNewLimit Int
+
+  /// When a scheduled downgrade would actually apply. Null for upgrades.
+  effectiveAt DateTime?
+
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([subscriptionId])
+  @@map("plan_change_quote")
 }
 
 /// Idempotency + audit trail for Stripe webhook events. `stripeEventId` unique

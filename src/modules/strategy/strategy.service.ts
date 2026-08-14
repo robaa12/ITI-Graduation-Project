@@ -29,6 +29,7 @@ import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
 import { ReviewStrategyDto } from './dto/review-strategy.dto';
 import { RegenerateStrategySectionDto } from './dto/regenerate-strategy-section.dto';
@@ -57,6 +58,7 @@ export class StrategyService {
     private readonly queue: Queue<StrategyJob>,
     private readonly mastra: MastraClient,
     private readonly generationCredits: GenerationCreditsService,
+    private readonly accounting: WorkflowAccountingService,
   ) {}
 
   /**
@@ -280,10 +282,12 @@ export class StrategyService {
 
   async findOne(userId: string, id: string) {
     const strategy = await this.findOwnedOrFail(userId, id);
-    const executions = await this.prisma.workflowExecution.findMany({
+    const storedExecutions = await this.prisma.workflowExecution.findMany({
       where: { strategyId: id },
       orderBy: { createdAt: 'asc' },
     });
+    const executions =
+      await this.accounting.reconcileForPresentation(storedExecutions);
     return { ...strategy, ...presentWorkflowAccounting(executions) };
   }
 

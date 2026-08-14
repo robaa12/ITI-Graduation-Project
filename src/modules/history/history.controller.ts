@@ -14,6 +14,7 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { ProjectsService } from '../projects/projects.service';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 
 type HistoryStatus =
   'running' | 'success' | 'failed' | 'suspended' | 'canceled';
@@ -37,6 +38,7 @@ export class HistoryController {
     private readonly prisma: PrismaService,
     private readonly projects: ProjectsService,
     private readonly campaigns: CampaignsService,
+    private readonly accounting: WorkflowAccountingService,
   ) {}
 
   @Get('campaigns/:campaignId/history')
@@ -100,6 +102,16 @@ export class HistoryController {
       }),
     ]);
 
+    const executions = await this.accounting.reconcileForPresentation([
+      ...strategies.flatMap((run) => run.executions),
+      ...contentRuns.flatMap((run) => run.executions),
+    ]);
+    const accountingById = new Map(
+      executions.map((execution) => [execution.id, execution]),
+    );
+    const refreshedExecutions = <T extends { id: string }>(items: T[]) =>
+      items.map((item) => accountingById.get(item.id) ?? item);
+
     return [
       ...strategies.map((run) => ({
         id: run.id,
@@ -113,7 +125,7 @@ export class HistoryController {
         reviewNote: run.reviewNote,
         createdAt: run.createdAt.toISOString(),
         updatedAt: run.updatedAt.toISOString(),
-        ...presentWorkflowAccounting(run.executions),
+        ...presentWorkflowAccounting(refreshedExecutions(run.executions)),
       })),
       ...contentRuns.map((run) => ({
         id: run.id,
@@ -123,7 +135,7 @@ export class HistoryController {
         error: run.error,
         createdAt: run.createdAt.toISOString(),
         updatedAt: run.updatedAt.toISOString(),
-        ...presentWorkflowAccounting(run.executions),
+        ...presentWorkflowAccounting(refreshedExecutions(run.executions)),
       })),
     ].toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

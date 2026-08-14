@@ -10,4 +10,5 @@ export class CreateCheckoutDto {
   /** Billing interval. The matching Stripe Price is looked up from the plan. */
   @IsIn(['month', 'year'])
   interval!: 'month' | 'year';
+
 }

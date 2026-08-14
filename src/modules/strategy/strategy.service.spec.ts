@@ -23,6 +23,7 @@ describe('StrategyService cancellation', () => {
     {} as never,
     mastra as never,
     generationCredits as never,
+    {} as never,
   );
 
   beforeEach(() => {

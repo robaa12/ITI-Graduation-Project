@@ -30,6 +30,7 @@ import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { StrategyService } from '../strategy/strategy.service';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
@@ -51,6 +52,7 @@ export class ContentWorkflowService {
     private readonly queue: Queue<ContentWorkflowJob>,
     private readonly mastra: MastraClient,
     private readonly generationCredits: GenerationCreditsService,
+    private readonly accounting: WorkflowAccountingService,
   ) {}
 
   /**
@@ -342,10 +344,12 @@ export class ContentWorkflowService {
 
   async findOne(userId: string, id: string) {
     const run = await this.findOwnedOrFail(userId, id);
-    const executions = await this.prisma.workflowExecution.findMany({
+    const storedExecutions = await this.prisma.workflowExecution.findMany({
       where: { contentRunId: id },
       orderBy: { createdAt: 'asc' },
     });
+    const executions =
+      await this.accounting.reconcileForPresentation(storedExecutions);
     return { ...run, ...presentWorkflowAccounting(executions) };
   }
 

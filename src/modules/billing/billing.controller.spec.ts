@@ -29,7 +29,7 @@ describe('BillingController (auth routing)', () => {
     listPlans: jest.Mock;
     previewPlanChange: jest.Mock;
   };
-  let webhookService: { handle: jest.Mock };
+  let webhookService: { handle: jest.Mock; confirmCheckoutReturn: jest.Mock };
 
   const USER = { id: 'user-1', email: 'user@example.com', name: 'User' };
 
@@ -50,7 +50,10 @@ describe('BillingController (auth routing)', () => {
       listPlans: jest.fn(),
       previewPlanChange: jest.fn(),
     };
-    webhookService = { handle: jest.fn() };
+    webhookService = {
+      handle: jest.fn(),
+      confirmCheckoutReturn: jest.fn(),
+    };
 
     const moduleRef = await Test.createTestingModule({
       controllers: [BillingController, StripeWebhookController],
@@ -94,6 +97,10 @@ describe('BillingController (auth routing)', () => {
         .send({ planCode: 'pro', interval: 'month' })
         .expect(401);
       await http
+        .post('/api/subscriptions/checkout/confirm')
+        .send({ planCode: 'business', interval: 'month' })
+        .expect(401);
+      await http
         .patch('/api/subscriptions/plan')
         .send({ planCode: 'pro', interval: 'month' })
         .expect(401);
@@ -105,6 +112,7 @@ describe('BillingController (auth routing)', () => {
         .expect(401);
       expect(billingService.createCheckoutSession).not.toHaveBeenCalled();
       expect(billingService.changePlan).not.toHaveBeenCalled();
+      expect(webhookService.confirmCheckoutReturn).not.toHaveBeenCalled();
     });
 
     it('returns only the authenticated user credit balance', async () => {
@@ -140,6 +148,32 @@ describe('BillingController (auth routing)', () => {
       expect(billingService.createCheckoutSession).toHaveBeenCalledWith(
         'user-1',
         { planCode: 'pro', interval: 'month' },
+      );
+    });
+
+    it('confirms a completed Checkout only for the authenticated user', async () => {
+      webhookService.confirmCheckoutReturn.mockResolvedValue({
+        confirmed: true,
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/subscriptions/checkout/confirm')
+        .set('Cookie', 'session=valid')
+        .send({
+          sessionId: 'cs_upgrade',
+          planCode: 'business',
+          interval: 'month',
+        })
+        .expect(200)
+        .expect({ confirmed: true });
+
+      expect(webhookService.confirmCheckoutReturn).toHaveBeenCalledWith(
+        'user-1',
+        {
+          sessionId: 'cs_upgrade',
+          planCode: 'business',
+          interval: 'month',
+        },
       );
     });
 
