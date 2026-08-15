@@ -268,7 +268,7 @@ export class StripeWebhookService {
           data: {
             stripeEventId: event.id,
             type: event.type,
-            payload: event as unknown as Prisma.InputJsonValue,
+            payload: event,
           },
         });
 

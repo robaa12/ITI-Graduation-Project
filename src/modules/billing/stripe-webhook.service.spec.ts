@@ -41,8 +41,11 @@ describe('StripeWebhookService', () => {
   let config: { getOrThrow: jest.Mock };
   let generationCredits: { getUsageInTransaction: jest.Mock };
 
-  const makeEvent = (type: string, id = 'evt_1'): Stripe.Event =>
-    ({ id, type, data: { object: {} } }) as unknown as Stripe.Event;
+  const makeEvent = (type: string, id = 'evt_1'): Stripe.Event => ({
+    id,
+    type,
+    data: { object: {} },
+  });
 
   const rawBody = Buffer.from('{"payload":"raw"}', 'utf8');
 

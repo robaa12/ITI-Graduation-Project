@@ -23,7 +23,7 @@ import { AuthService } from './auth.service';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) { }
+  constructor(private readonly authService: AuthService) {}
 
   @Post('sign-up/email')
   @HttpCode(201)
@@ -92,7 +92,10 @@ export class AuthController {
   }
 
   @Post('email-otp/send-verification-otp')
-  async sendVerificationOtp(@Req() req: Request, @Res() res: Response): Promise<void> {
+  async sendVerificationOtp(
+    @Req() req: Request,
+    @Res() res: Response,
+  ): Promise<void> {
     await this.authService.handle(req, res);
   }
 
