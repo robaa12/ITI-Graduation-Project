@@ -27,4 +27,9 @@ export class ChangePlanDto {
   @IsString()
   @MaxLength(60)
   quoteId?: string;
+
+  /** Use Stripe Elements in our checkout page instead of Stripe's hosted UI. */
+  @IsOptional()
+  @IsIn(['hosted', 'custom'])
+  uiMode?: 'hosted' | 'custom';
 }

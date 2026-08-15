@@ -182,6 +182,9 @@ type PlanChangeContext = {
 export type PlanChangeResult = {
   /** Stripe Checkout URL when payment is required, otherwise null. */
   url: string | null;
+  /** Secret used by Stripe.js only when the custom Elements UI is requested. */
+  clientSecret?: string;
+  sessionId?: string;
   kind?: PlanChangeDirection;
   /** True when the change was queued for the period end instead of applied. */
   scheduled?: boolean;
@@ -259,7 +262,11 @@ export class BillingService {
   async createCheckoutSession(
     userId: string,
     dto: CreateCheckoutDto,
-  ): Promise<{ url: string | null }> {
+  ): Promise<{
+    url: string | null;
+    clientSecret?: string;
+    sessionId?: string;
+  }> {
     const plan = await this.findActivePlanOrFail(dto.planCode);
     if (plan.code === 'free') {
       throw new BadRequestException(
@@ -267,6 +274,7 @@ export class BillingService {
       );
     }
     const billingInterval = toBillingInterval(dto.interval);
+    const customUi = dto.uiMode === 'custom';
     const priceId =
       dto.interval === 'month'
         ? plan.stripeMonthlyPriceId
@@ -329,9 +337,17 @@ export class BillingService {
       );
 
       if (pendingSession.status === 'open') {
+        const pendingMatchesUi = customUi
+          ? pendingSession.ui_mode === 'elements' &&
+            Boolean(pendingSession.client_secret)
+          : (pendingSession.ui_mode === 'hosted_page' ||
+              pendingSession.ui_mode === null) &&
+            Boolean(pendingSession.url);
+
         if (
           currentSubscription.planId !== plan.id ||
-          currentSubscription.billingInterval !== billingInterval
+          currentSubscription.billingInterval !== billingInterval ||
+          !pendingMatchesUi
         ) {
           // Checkout Sessions cannot be edited to replace subscription line
           // items. Expire the stale plan selection so this request can create
@@ -348,13 +364,21 @@ export class BillingService {
             );
           }
         } else {
-          if (!pendingSession.url) {
-            throw new ServiceUnavailableException(
-              'Stripe returned a malformed Checkout Session',
-            );
+          if (customUi && pendingSession.client_secret) {
+            return {
+              url: null,
+              clientSecret: pendingSession.client_secret,
+              sessionId: pendingSession.id,
+            };
           }
 
-          return { url: pendingSession.url };
+          if (!customUi && pendingSession.url) {
+            return { url: pendingSession.url };
+          }
+
+          throw new ServiceUnavailableException(
+            'Stripe returned a malformed Checkout Session',
+          );
         }
       }
 
@@ -379,9 +403,21 @@ export class BillingService {
 
     let session: Stripe.Checkout.Session;
     try {
+      const completionUrl = checkoutSuccessUrl(
+        this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
+        plan.code,
+        dto.interval,
+      );
       session = await this.stripe.checkout.sessions.create(
         {
           mode: 'subscription',
+          ...(customUi
+            ? { ui_mode: 'elements' as const, return_url: completionUrl }
+            : {
+                success_url: completionUrl,
+                cancel_url:
+                  this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+              }),
           customer: stripeCustomerId,
           line_items: [{ price: priceId, quantity: 1 }],
           // Keep the hosted page focused on card entry. Automatic payment
@@ -391,13 +427,6 @@ export class BillingService {
           // makes the first invoice free.
           payment_method_types: ['card'],
           payment_method_collection: 'always',
-          success_url: checkoutSuccessUrl(
-            this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
-            plan.code,
-            dto.interval,
-          ),
-          cancel_url:
-            this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
           client_reference_id: userId,
           metadata: { userId },
           subscription_data: {
@@ -409,7 +438,11 @@ export class BillingService {
           },
         },
         {
-          idempotencyKey: `checkout:${userId}:${checkoutGeneration}:${plan.id}:${dto.interval}`,
+          // A hosted session and a custom-UI session have different immutable
+          // parameters. Keep their idempotency namespaces separate so a user
+          // migrating an expired hosted checkout to Elements does not receive
+          // Stripe's "same key, different parameters" rejection.
+          idempotencyKey: `checkout:${userId}:${checkoutGeneration}:${plan.id}:${dto.interval}${customUi ? ':elements' : ''}`,
         },
       );
     } catch (error) {
@@ -422,7 +455,7 @@ export class BillingService {
       );
     }
 
-    if (!session.url || !session.id) {
+    if (!session.id || (customUi ? !session.client_secret : !session.url)) {
       throw new ServiceUnavailableException(
         'Stripe returned a malformed Checkout Session',
       );
@@ -466,7 +499,13 @@ export class BillingService {
       });
     }
 
-    return { url: session.url };
+    return customUi
+      ? {
+          url: null,
+          clientSecret: session.client_secret!,
+          sessionId: session.id,
+        }
+      : { url: session.url! };
   }
 
   /**
@@ -543,7 +582,7 @@ export class BillingService {
 
     return context.direction === PlanChangeKind.DOWNGRADE
       ? this.applyScheduledDowngrade(userId, context, quote)
-      : this.applyUpgrade(userId, context, quote);
+      : this.applyUpgrade(userId, context, quote, dto.uiMode);
   }
 
   /**
@@ -774,8 +813,10 @@ export class BillingService {
     userId: string,
     context: PlanChangeContext,
     quote: { id: string; amountDueCents: number; currency: string },
+    uiMode: 'hosted' | 'custom' = 'hosted',
   ): Promise<PlanChangeResult> {
     const { subscription, plan, priceId, current, item } = context;
+    const customUi = uiMode === 'custom';
 
     // An upgrade supersedes anything the customer had queued for the period
     // end, otherwise the schedule would quietly undo the plan they just paid for.
@@ -840,12 +881,24 @@ export class BillingService {
       }
 
       // Subscription updates normally charge a saved card immediately. Use a
-      // payment-mode Checkout Session instead so every paid upgrade opens
-      // Stripe's hosted payment-details page. The webhook changes the Price
-      // only after this payment succeeds.
+      // payment-mode Checkout Session instead so the customer explicitly
+      // confirms the prorated charge. The webhook changes the Price only after
+      // this payment succeeds.
+      const completionUrl = checkoutSuccessUrl(
+        this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
+        plan.code,
+        context.interval,
+      );
       const checkout = await this.stripe.checkout.sessions.create(
         {
           mode: 'payment',
+          ...(customUi
+            ? { ui_mode: 'elements' as const, return_url: completionUrl }
+            : {
+                success_url: completionUrl,
+                cancel_url:
+                  this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+              }),
           customer: stripeCustomerId,
           payment_method_types: ['card'],
           line_items: [
@@ -871,13 +924,6 @@ export class BillingService {
               targetPriceId: priceId,
             },
           },
-          success_url: checkoutSuccessUrl(
-            this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
-            plan.code,
-            context.interval,
-          ),
-          cancel_url:
-            this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
           client_reference_id: userId,
           metadata: {
             billingFlow: 'plan_change',
@@ -891,13 +937,13 @@ export class BillingService {
           },
         },
         {
-          idempotencyKey: `plan-change-checkout:${current.id}:${item.price.id}:${priceId}:${quote.id}`,
+          idempotencyKey: `plan-change-checkout:${current.id}:${item.price.id}:${priceId}:${quote.id}${customUi ? ':elements' : ''}`,
         },
       );
 
-      if (!checkout.url) {
+      if (customUi ? !checkout.client_secret : !checkout.url) {
         throw new ServiceUnavailableException(
-          'Stripe did not return a payment URL for the plan change',
+          'Stripe did not return secure payment details for the plan change',
         );
       }
 
@@ -909,7 +955,13 @@ export class BillingService {
       });
 
       return {
-        url: checkout.url,
+        url: customUi ? null : checkout.url,
+        ...(customUi
+          ? {
+              clientSecret: checkout.client_secret!,
+              sessionId: checkout.id,
+            }
+          : {}),
         kind: PlanChangeKind.UPGRADE,
         scheduled: false,
         effectiveAt: null,

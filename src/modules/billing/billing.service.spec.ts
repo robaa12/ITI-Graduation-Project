@@ -418,6 +418,49 @@ describe('BillingService', () => {
       });
     });
 
+    it('creates an Elements Checkout Session for the custom UI', async () => {
+      prisma.plan.findFirst.mockResolvedValue(PLAN);
+      prisma.subscription.findUnique.mockResolvedValue(null);
+      prisma.subscription.create.mockResolvedValue({});
+      stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+      stripe.checkout.sessions.create.mockResolvedValue({
+        id: 'cs_custom',
+        url: null,
+        ui_mode: 'elements',
+        client_secret: 'cs_custom_secret_123',
+      });
+
+      await expect(
+        service.createCheckoutSession('user-1', {
+          planCode: 'pro',
+          interval: 'month',
+          uiMode: 'custom',
+        }),
+      ).resolves.toEqual({
+        url: null,
+        clientSecret: 'cs_custom_secret_123',
+        sessionId: 'cs_custom',
+      });
+
+      const [params] = stripe.checkout.sessions.create.mock.calls[0];
+      const [, requestOptions] = stripe.checkout.sessions.create.mock.calls[0];
+      expect(params).toEqual(
+        expect.objectContaining({
+          mode: 'subscription',
+          ui_mode: 'elements',
+          return_url:
+            'http://localhost:5173/billing?success=1&completedPlan=pro&interval=month&session_id={CHECKOUT_SESSION_ID}',
+          line_items: [{ price: 'price_monthly', quantity: 1 }],
+          payment_method_types: ['card'],
+        }),
+      );
+      expect(params).not.toHaveProperty('success_url');
+      expect(params).not.toHaveProperty('cancel_url');
+      expect(requestOptions).toEqual({
+        idempotencyKey: 'checkout:user-1:initial:plan-1:month:elements',
+      });
+    });
+
     it('reuses an existing Stripe customer instead of creating a new one', async () => {
       prisma.plan.findFirst.mockResolvedValue(PLAN);
       prisma.subscription.findUnique
@@ -452,6 +495,7 @@ describe('BillingService', () => {
       stripe.checkout.sessions.retrieve.mockResolvedValue({
         id: 'cs_pending',
         status: 'open',
+        ui_mode: 'hosted_page',
         url: 'https://checkout.stripe.com/pending',
       });
 
@@ -771,6 +815,55 @@ describe('BillingService', () => {
         });
         // The price only moves once Stripe confirms the payment.
         expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+      });
+
+      it('returns an Elements client secret for a custom upgrade checkout', async () => {
+        prisma.subscription.findUnique.mockResolvedValue(BASE_SUBSCRIPTION);
+        prisma.plan.findFirst.mockResolvedValue(NEW_PLAN);
+        stripe.subscriptions.retrieve.mockResolvedValue(LIVE_SUBSCRIPTION);
+        stripe.invoices.createPreview.mockResolvedValue({
+          total: 2500,
+          currency: 'usd',
+          lines: { data: [{ amount: -500 }, { amount: 3000 }] },
+        });
+        stripe.checkout.sessions.create.mockResolvedValue({
+          id: 'cs_upgrade_custom',
+          url: null,
+          ui_mode: 'elements',
+          client_secret: 'cs_upgrade_custom_secret_123',
+        });
+
+        const result = await service.changePlan('user-1', {
+          planCode: 'pro',
+          interval: 'month',
+          uiMode: 'custom',
+        });
+
+        const [params, requestOptions] =
+          stripe.checkout.sessions.create.mock.calls[0];
+        expect(params).toEqual(
+          expect.objectContaining({
+            mode: 'payment',
+            ui_mode: 'elements',
+            return_url:
+              'http://localhost:5173/billing?success=1&completedPlan=pro&interval=month&session_id={CHECKOUT_SESSION_ID}',
+            customer: 'cus_123',
+            payment_method_types: ['card'],
+          }),
+        );
+        expect(params).not.toHaveProperty('success_url');
+        expect(params).not.toHaveProperty('cancel_url');
+        expect(requestOptions).toEqual({
+          idempotencyKey:
+            'plan-change-checkout:sub_live:price_basic:price_pro_monthly:quote-1:elements',
+        });
+        expect(result).toMatchObject({
+          url: null,
+          clientSecret: 'cs_upgrade_custom_secret_123',
+          sessionId: 'cs_upgrade_custom',
+          kind: 'UPGRADE',
+          scheduled: false,
+        });
       });
 
       it('records the money breakdown and the credit projection on the quote', async () => {
