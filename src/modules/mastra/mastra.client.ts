@@ -214,6 +214,26 @@ export class MastraClient {
     );
   }
 
+  async generateChatTitle(input: {
+    brandName: string;
+    product: string;
+    industry: string;
+    businessType: string;
+    campaignGoal: string;
+    targetAudience: string;
+  }): Promise<{ title: string }> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) {
+      throw new MastraRequestError(
+        'MASTRA_INTERNAL_TOKEN is required before chat titles can be generated',
+      );
+    }
+
+    return this.request('POST', '/internal/chat-title/generate', input, {
+      'X-Mastra-Internal-Token': token,
+    });
+  }
+
   /** Generates one asset for the backwards-compatible per-item content queue. */
   async generateContentItem(input: unknown): Promise<unknown> {
     const token = this.config.get<string>('mastra.internalToken');

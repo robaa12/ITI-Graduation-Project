@@ -18,6 +18,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CampaignsService } from './campaigns.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { GenerateCampaignTitleDto } from './dto/generate-campaign-title.dto';
 import { QueryCampaignsDto } from './dto/query-campaigns.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
@@ -101,6 +102,16 @@ export class CampaignsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.campaignsService.unpublish(user.id, id);
+  }
+
+  @Post(':id/generate-title')
+  @HttpCode(200)
+  generateTitle(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: GenerateCampaignTitleDto,
+  ) {
+    return this.campaignsService.generateTitle(user.id, id, dto);
   }
 
   @Delete(':id')
