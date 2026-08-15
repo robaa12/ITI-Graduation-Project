@@ -8,11 +8,14 @@ import {
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildKnowledgeScope } from '../../common/knowledge-scope';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { toErrorMessage, toWorkflowRunStatus } from '../mastra/run-status';
 import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { toGeneratedContentRows } from './calendar-fanout';
+import { contentWorkflowCreditReference } from './content-workflow.service';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
@@ -26,6 +29,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly mastra: MastraClient,
     private readonly accounting: WorkflowAccountingService,
+    private readonly generationCredits: GenerationCreditsService,
   ) {
     super();
   }
@@ -86,7 +90,14 @@ export class ContentWorkflowProcessor extends WorkerHost {
         projectId: run.campaign.projectId,
         status: KnowledgeSourceStatus.READY,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        url: true,
+        indexedAt: true,
+        metadata: true,
+      },
     });
 
     const result = resume
@@ -101,10 +112,10 @@ export class ContentWorkflowProcessor extends WorkerHost {
           run.runId,
           {
             ...(run.input as Record<string, unknown>),
-            knowledgeScope: {
-              projectId: run.campaign.projectId,
-              sourceIds: readySources.map((source) => source.id),
-            },
+            knowledgeScope: buildKnowledgeScope(
+              run.campaign.projectId,
+              readySources,
+            ),
             ...(run.campaign.project.brandProfile
               ? { brandProfile: run.campaign.project.brandProfile }
               : {}),
@@ -180,6 +191,11 @@ export class ContentWorkflowProcessor extends WorkerHost {
         ),
       );
     await this.accounting.collectOrSchedule(run.runId);
+    if (status === WorkflowRunStatus.FAILED) {
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(run.runId),
+      );
+    }
 
     this.logger.log(
       `Content run ${contentRunId} finished as ${status}` +
@@ -235,6 +251,9 @@ export class ContentWorkflowProcessor extends WorkerHost {
         .markTerminal(run.runId, WorkflowRunStatus.FAILED)
         .catch(() => undefined);
       await this.accounting.collectOrSchedule(run.runId);
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(run.runId),
+      );
     }
   }
 

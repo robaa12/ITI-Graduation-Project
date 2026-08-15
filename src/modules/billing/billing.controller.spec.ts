@@ -23,10 +23,13 @@ describe('BillingController (auth routing)', () => {
     cancelSubscription: jest.Mock;
     changePlan: jest.Mock;
     createCheckoutSession: jest.Mock;
+    createBillingPortal: jest.Mock;
+    getCreditUsage: jest.Mock;
     getSubscription: jest.Mock;
     listPlans: jest.Mock;
+    previewPlanChange: jest.Mock;
   };
-  let webhookService: { handle: jest.Mock };
+  let webhookService: { handle: jest.Mock; confirmCheckoutReturn: jest.Mock };
 
   const USER = { id: 'user-1', email: 'user@example.com', name: 'User' };
 
@@ -41,10 +44,16 @@ describe('BillingController (auth routing)', () => {
       cancelSubscription: jest.fn(),
       changePlan: jest.fn(),
       createCheckoutSession: jest.fn(),
+      createBillingPortal: jest.fn(),
+      getCreditUsage: jest.fn(),
       getSubscription: jest.fn(),
       listPlans: jest.fn(),
+      previewPlanChange: jest.fn(),
     };
-    webhookService = { handle: jest.fn() };
+    webhookService = {
+      handle: jest.fn(),
+      confirmCheckoutReturn: jest.fn(),
+    };
 
     const moduleRef = await Test.createTestingModule({
       controllers: [BillingController, StripeWebhookController],
@@ -82,17 +91,46 @@ describe('BillingController (auth routing)', () => {
     it('blocks every authenticated subscription route without a session', async () => {
       const http = unauthServer();
       await http.get('/api/subscriptions/me').expect(401);
+      await http.get('/api/subscriptions/usage').expect(401);
       await http
         .post('/api/subscriptions/checkout')
         .send({ planCode: 'pro', interval: 'month' })
+        .expect(401);
+      await http
+        .post('/api/subscriptions/checkout/confirm')
+        .send({ planCode: 'business', interval: 'month' })
         .expect(401);
       await http
         .patch('/api/subscriptions/plan')
         .send({ planCode: 'pro', interval: 'month' })
         .expect(401);
       await http.post('/api/subscriptions/cancel').expect(401);
+      await http.post('/api/subscriptions/portal').expect(401);
+      await http
+        .post('/api/subscriptions/plan/preview')
+        .send({ planCode: 'business', interval: 'month' })
+        .expect(401);
       expect(billingService.createCheckoutSession).not.toHaveBeenCalled();
       expect(billingService.changePlan).not.toHaveBeenCalled();
+      expect(webhookService.confirmCheckoutReturn).not.toHaveBeenCalled();
+    });
+
+    it('returns only the authenticated user credit balance', async () => {
+      billingService.getCreditUsage.mockResolvedValue({
+        plan: { code: 'free', name: 'Free' },
+        limit: 6,
+        used: 1,
+        remaining: 5,
+        canGenerate: true,
+      });
+
+      await request(app.getHttpServer())
+        .get('/api/subscriptions/usage')
+        .set('Cookie', 'session=valid')
+        .expect(200)
+        .expect(({ body }) => body.remaining === 5);
+
+      expect(billingService.getCreditUsage).toHaveBeenCalledWith('user-1');
     });
 
     it('routes the checkout to the service with the authenticated user id', async () => {
@@ -113,6 +151,32 @@ describe('BillingController (auth routing)', () => {
       );
     });
 
+    it('confirms a completed Checkout only for the authenticated user', async () => {
+      webhookService.confirmCheckoutReturn.mockResolvedValue({
+        confirmed: true,
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/subscriptions/checkout/confirm')
+        .set('Cookie', 'session=valid')
+        .send({
+          sessionId: 'cs_upgrade',
+          planCode: 'business',
+          interval: 'month',
+        })
+        .expect(200)
+        .expect({ confirmed: true });
+
+      expect(webhookService.confirmCheckoutReturn).toHaveBeenCalledWith(
+        'user-1',
+        {
+          sessionId: 'cs_upgrade',
+          planCode: 'business',
+          interval: 'month',
+        },
+      );
+    });
+
     it('never lets the client choose which subscription to change', async () => {
       billingService.changePlan.mockResolvedValue({});
 
@@ -128,6 +192,26 @@ describe('BillingController (auth routing)', () => {
       });
     });
 
+    it('previews the authenticated user prorated plan difference', async () => {
+      billingService.previewPlanChange.mockResolvedValue({
+        amountDueCents: 2499,
+        currency: 'usd',
+        isCredit: false,
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/subscriptions/plan/preview')
+        .set('Cookie', 'session=valid')
+        .send({ planCode: 'business', interval: 'month' })
+        .expect(200)
+        .expect(({ body }) => body.amountDueCents === 2499);
+
+      expect(billingService.previewPlanChange).toHaveBeenCalledWith('user-1', {
+        planCode: 'business',
+        interval: 'month',
+      });
+    });
+
     it('cancels only the authenticated user subscription', async () => {
       billingService.cancelSubscription.mockResolvedValue({});
 
@@ -137,6 +221,20 @@ describe('BillingController (auth routing)', () => {
         .expect(200);
 
       expect(billingService.cancelSubscription).toHaveBeenCalledWith('user-1');
+    });
+
+    it('opens payment settings only for the authenticated user', async () => {
+      billingService.createBillingPortal.mockResolvedValue({
+        url: 'https://billing.stripe.com/session/123',
+      });
+
+      await request(app.getHttpServer())
+        .post('/api/subscriptions/portal')
+        .set('Cookie', 'session=valid')
+        .expect(200)
+        .expect(({ body }) => body.url);
+
+      expect(billingService.createBillingPortal).toHaveBeenCalledWith('user-1');
     });
   });
 

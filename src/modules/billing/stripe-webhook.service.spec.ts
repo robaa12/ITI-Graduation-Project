@@ -15,18 +15,31 @@ describe('StripeWebhookService', () => {
       updateMany: jest.Mock;
       upsert: jest.Mock;
     };
-    subscriptionEvent: { create: jest.Mock };
+    subscriptionEvent: { create: jest.Mock; update: jest.Mock };
+    planChangeQuote: { updateMany: jest.Mock };
     user: { findUnique: jest.Mock };
   };
   let prisma: {
     $transaction: jest.Mock;
     subscriptionEvent: { findUnique: jest.Mock };
+    subscription: { findUnique: jest.Mock };
+    plan: { findFirst: jest.Mock };
+    planChangeQuote: { findFirst: jest.Mock };
   };
   let stripe: {
-    subscriptions: { cancel: jest.Mock; retrieve: jest.Mock };
+    checkout: {
+      sessions: { retrieve: jest.Mock; list: jest.Mock };
+    };
+    paymentIntents: { retrieve: jest.Mock };
+    subscriptions: {
+      cancel: jest.Mock;
+      retrieve: jest.Mock;
+      update: jest.Mock;
+    };
     webhooks: { constructEvent: jest.Mock };
   };
   let config: { getOrThrow: jest.Mock };
+  let generationCredits: { getUsageInTransaction: jest.Mock };
 
   const makeEvent = (type: string, id = 'evt_1'): Stripe.Event =>
     ({ id, type, data: { object: {} } }) as unknown as Stripe.Event;
@@ -43,24 +56,45 @@ describe('StripeWebhookService', () => {
         updateMany: jest.fn(),
         upsert: jest.fn(),
       },
-      subscriptionEvent: { create: jest.fn() },
+      subscriptionEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-row-1' }),
+        update: jest.fn(),
+      },
+      planChangeQuote: { updateMany: jest.fn() },
       user: { findUnique: jest.fn() },
     };
 
     prisma = {
       $transaction: jest.fn((run) => run(tx)),
       subscriptionEvent: { findUnique: jest.fn() },
+      subscription: { findUnique: jest.fn() },
+      plan: { findFirst: jest.fn() },
+      planChangeQuote: { findFirst: jest.fn() },
     };
 
     stripe = {
-      subscriptions: { cancel: jest.fn(), retrieve: jest.fn() },
+      checkout: {
+        sessions: { retrieve: jest.fn(), list: jest.fn() },
+      },
+      paymentIntents: { retrieve: jest.fn() },
+      subscriptions: {
+        cancel: jest.fn(),
+        retrieve: jest.fn(),
+        update: jest.fn(),
+      },
       webhooks: { constructEvent: jest.fn() },
     };
 
     config = { getOrThrow: jest.fn().mockReturnValue('whsec_test') };
+    generationCredits = { getUsageInTransaction: jest.fn() };
 
-    // @ts-expect-error test double with only the members under test
-    service = new StripeWebhookService(prisma, config, stripe);
+    service = new StripeWebhookService(
+      // @ts-expect-error test double with only the members under test
+      prisma,
+      config,
+      generationCredits,
+      stripe,
+    );
   });
 
   describe('signature verification', () => {
@@ -202,6 +236,316 @@ describe('StripeWebhookService', () => {
         status: SubscriptionStatus.ACTIVE,
       });
     });
+
+    it('applies a paid plan change only after Checkout completes', async () => {
+      const event = makeEvent('checkout.session.completed');
+      event.data.object = {
+        id: 'cs_upgrade',
+        client_reference_id: 'user-1',
+        customer: 'cus_123',
+        payment_intent: 'pi_upgrade',
+        payment_status: 'paid',
+        metadata: {
+          billingFlow: 'plan_change',
+          userId: 'user-1',
+          planId: 'plan-business',
+          interval: 'month',
+          stripeSubscriptionId: 'sub_123',
+          sourcePriceId: 'price_pro_monthly',
+          targetPriceId: 'price_business_monthly',
+        },
+      };
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.paymentIntents.retrieve.mockResolvedValue({
+        id: 'pi_upgrade',
+        status: 'succeeded',
+        payment_method: 'pm_new_card',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_123',
+        status: 'active',
+        cancel_at_period_end: false,
+        canceled_at: null,
+        items: {
+          data: [
+            {
+              id: 'si_123',
+              price: {
+                id: 'price_pro_monthly',
+                recurring: { interval: 'month' },
+              },
+            },
+          ],
+        },
+      });
+      stripe.subscriptions.update.mockResolvedValue({
+        id: 'sub_123',
+        status: 'active',
+        cancel_at_period_end: false,
+        canceled_at: null,
+        items: {
+          data: [
+            {
+              id: 'si_123',
+              current_period_start: 1_700_000_000,
+              current_period_end: 1_702_592_000,
+              price: {
+                id: 'price_business_monthly',
+                recurring: { interval: 'month' },
+              },
+            },
+          ],
+        },
+      });
+      tx.subscription.update.mockResolvedValue({});
+
+      await expect(service.handle(rawBody, 'sig')).resolves.toEqual({
+        received: true,
+      });
+
+      expect(stripe.subscriptions.update).toHaveBeenCalledWith(
+        'sub_123',
+        {
+          items: [{ id: 'si_123', price: 'price_business_monthly' }],
+          proration_behavior: 'none',
+          default_payment_method: 'pm_new_card',
+        },
+        { idempotencyKey: 'apply-plan-change:cs_upgrade' },
+      );
+      expect(tx.subscription.update).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        data: expect.objectContaining({
+          planId: 'plan-business',
+          stripePriceId: 'price_business_monthly',
+          billingInterval: 'MONTHLY',
+          status: SubscriptionStatus.ACTIVE,
+          // Anything queued for the period end is superseded by a paid upgrade.
+          pendingPlanId: null,
+          stripeScheduleId: null,
+        }),
+      });
+      // The credits the customer just paid for are granted in the same
+      // transaction that applies the plan.
+      expect(generationCredits.getUsageInTransaction).toHaveBeenCalledWith(
+        tx,
+        'user-1',
+      );
+    });
+
+    it('grants the new allowance only after the plan row is updated', async () => {
+      const event = makeEvent('checkout.session.completed');
+      event.data.object = paidPlanChangeSession();
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.paymentIntents.retrieve.mockResolvedValue({
+        id: 'pi_upgrade',
+        status: 'succeeded',
+        payment_method: 'pm_new_card',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue(
+        liveSubscription('price_pro_monthly'),
+      );
+      stripe.subscriptions.update.mockResolvedValue(
+        liveSubscription('price_business_monthly'),
+      );
+
+      const order: string[] = [];
+      tx.subscription.update.mockImplementation(() => {
+        order.push('plan');
+        return Promise.resolve({});
+      });
+      generationCredits.getUsageInTransaction.mockImplementation(() => {
+        order.push('credits');
+        return Promise.resolve({});
+      });
+
+      await service.handle(rawBody, 'sig');
+
+      // Order matters: the allowance is derived from the subscription's plan,
+      // so syncing first would recompute against the plan being replaced.
+      expect(order).toEqual(['plan', 'credits']);
+    });
+
+    it('does not grant credits when the subscription moved under the Checkout', async () => {
+      const event = makeEvent('checkout.session.completed');
+      event.data.object = paidPlanChangeSession();
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.paymentIntents.retrieve.mockResolvedValue({
+        id: 'pi_upgrade',
+        status: 'succeeded',
+        payment_method: 'pm_new_card',
+      });
+      // Somebody changed the price between quoting and paying.
+      stripe.subscriptions.retrieve.mockResolvedValue(
+        liveSubscription('price_something_else'),
+      );
+
+      await expect(service.handle(rawBody, 'sig')).rejects.toThrow();
+      expect(generationCredits.getUsageInTransaction).not.toHaveBeenCalled();
+      expect(tx.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('applies a completed authenticated Checkout return when the webhook is delayed', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-pro',
+        billingInterval: 'MONTHLY',
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+        stripePriceId: 'price_pro_monthly',
+        checkoutSessionId: null,
+      });
+      prisma.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.checkout.sessions.retrieve.mockResolvedValue(
+        paidPlanChangeSession(),
+      );
+      tx.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.paymentIntents.retrieve.mockResolvedValue({
+        id: 'pi_upgrade',
+        status: 'succeeded',
+        payment_method: 'pm_new_card',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue(
+        liveSubscription('price_pro_monthly'),
+      );
+      stripe.subscriptions.update.mockResolvedValue(
+        liveSubscription('price_business_monthly'),
+      );
+
+      await expect(
+        service.confirmCheckoutReturn('user-1', {
+          sessionId: 'cs_upgrade',
+          planCode: 'business',
+          interval: 'month',
+        }),
+      ).resolves.toEqual({ confirmed: true });
+
+      expect(stripe.checkout.sessions.retrieve).toHaveBeenCalledWith(
+        'cs_upgrade',
+      );
+      expect(tx.subscription.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'user-1' },
+          data: expect.objectContaining({
+            planId: 'plan-business',
+            stripePriceId: 'price_business_monthly',
+          }),
+        }),
+      );
+    });
+
+    it('repairs a recent paid upgrade created before the return URL carried a session id', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-pro',
+        billingInterval: 'MONTHLY',
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+        stripePriceId: 'price_pro_monthly',
+        checkoutSessionId: null,
+      });
+      prisma.planChangeQuote.findFirst.mockResolvedValue({
+        id: 'quote-1',
+        planId: 'plan-business',
+        fromPriceId: 'price_pro_monthly',
+        targetPriceId: 'price_business_monthly',
+      });
+      stripe.checkout.sessions.list.mockResolvedValue({
+        data: [
+          {
+            ...paidPlanChangeSession(),
+            metadata: {
+              ...paidPlanChangeSession().metadata,
+              quoteId: 'quote-1',
+            },
+          },
+        ],
+      });
+      tx.subscription.findUnique.mockResolvedValue({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_123',
+      });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-business' });
+      stripe.paymentIntents.retrieve.mockResolvedValue({
+        id: 'pi_upgrade',
+        status: 'succeeded',
+        payment_method: 'pm_new_card',
+      });
+      stripe.subscriptions.retrieve.mockResolvedValue(
+        liveSubscription('price_pro_monthly'),
+      );
+      stripe.subscriptions.update.mockResolvedValue(
+        liveSubscription('price_business_monthly'),
+      );
+
+      await expect(
+        service.confirmCheckoutReturn('user-1', {}),
+      ).resolves.toEqual({ confirmed: true });
+
+      expect(stripe.checkout.sessions.list).toHaveBeenCalledWith({
+        customer: 'cus_123',
+        limit: 20,
+      });
+      expect(tx.subscription.update).toHaveBeenCalled();
+    });
+
+    function paidPlanChangeSession() {
+      return {
+        id: 'cs_upgrade',
+        status: 'complete',
+        client_reference_id: 'user-1',
+        customer: 'cus_123',
+        payment_intent: 'pi_upgrade',
+        payment_status: 'paid',
+        metadata: {
+          billingFlow: 'plan_change',
+          userId: 'user-1',
+          planId: 'plan-business',
+          interval: 'month',
+          stripeSubscriptionId: 'sub_123',
+          sourcePriceId: 'price_pro_monthly',
+          targetPriceId: 'price_business_monthly',
+        },
+      };
+    }
+
+    function liveSubscription(priceId: string) {
+      return {
+        id: 'sub_123',
+        status: 'active',
+        cancel_at_period_end: false,
+        canceled_at: null,
+        items: {
+          data: [
+            {
+              id: 'si_123',
+              current_period_start: 1_700_000_000,
+              current_period_end: 1_702_592_000,
+              price: { id: priceId, recurring: { interval: 'month' } },
+            },
+          ],
+        },
+      };
+    }
   });
 
   describe('customer.subscription.updated', () => {
@@ -438,6 +782,129 @@ describe('StripeWebhookService', () => {
       });
       expect(stripe.subscriptions.cancel).not.toHaveBeenCalled();
       expect(tx.subscription.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scheduled downgrades landing', () => {
+    const phaseTransition = () => {
+      const event = makeEvent('customer.subscription.updated');
+      event.data.object = {
+        id: 'sub_123',
+        customer: 'cus_123',
+        status: 'active',
+        cancel_at_period_end: false,
+        metadata: { userId: 'user-1' },
+        items: {
+          data: [
+            {
+              current_period_start: 1_702_592_000,
+              current_period_end: 1_705_270_400,
+              price: {
+                id: 'price_lite_monthly',
+                recurring: { interval: 'month' },
+              },
+            },
+          ],
+        },
+      };
+      return event;
+    };
+
+    it('drops the allowance and clears the pending change when the phase flips', async () => {
+      const event = phaseTransition();
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.user.findUnique.mockResolvedValue({ id: 'user-1' });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-lite' });
+      tx.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-business',
+        pendingPlanId: 'plan-lite',
+      });
+
+      await service.handle(rawBody, 'sig');
+
+      const arg = tx.subscription.upsert.mock.calls[0][0];
+      expect(arg.update).toMatchObject({
+        planId: 'plan-lite',
+        pendingPlanId: null,
+        stripeScheduleId: null,
+      });
+      // The plan behind the allowance moved, so the ceiling is recomputed.
+      expect(generationCredits.getUsageInTransaction).toHaveBeenCalledWith(
+        tx,
+        'user-1',
+      );
+    });
+
+    it('leaves the allowance alone when the plan did not move', async () => {
+      const event = phaseTransition();
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.user.findUnique.mockResolvedValue({ id: 'user-1' });
+      tx.plan.findFirst.mockResolvedValue({ id: 'plan-lite' });
+      tx.subscription.findUnique.mockResolvedValue({
+        planId: 'plan-lite',
+        pendingPlanId: null,
+      });
+
+      await service.handle(rawBody, 'sig');
+
+      expect(generationCredits.getUsageInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('forgets a queued change once its schedule is released', async () => {
+      const event = makeEvent('subscription_schedule.released');
+      event.data.object = { id: 'sched_1', customer: 'cus_123' };
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+
+      await service.handle(rawBody, 'sig');
+
+      expect(tx.subscription.updateMany).toHaveBeenCalledWith({
+        where: { stripeScheduleId: 'sched_1' },
+        data: expect.objectContaining({
+          pendingPlanId: null,
+          stripeScheduleId: null,
+        }),
+      });
+    });
+  });
+
+  describe('audit trail', () => {
+    it('links the recorded event to the subscription it belongs to', async () => {
+      const event = makeEvent('customer.subscription.updated');
+      event.data.object = {
+        id: 'sub_123',
+        customer: 'cus_123',
+        status: 'active',
+        cancel_at_period_end: false,
+        metadata: { userId: 'user-1' },
+        items: { data: [{ price: { id: 'price_x' } }] },
+      };
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+      tx.user.findUnique.mockResolvedValue({ id: 'user-1' });
+      tx.subscription.findFirst.mockResolvedValue({ id: 'sub-row-1' });
+
+      await service.handle(rawBody, 'sig');
+
+      expect(tx.subscriptionEvent.update).toHaveBeenCalledWith({
+        where: { id: 'evt-row-1' },
+        data: { subscriptionId: 'sub-row-1' },
+      });
+    });
+
+    it('does not guess a subscription when the event names none', async () => {
+      const event = makeEvent('customer.updated');
+      event.data.object = {};
+      stripe.webhooks.constructEvent.mockReturnValue(event);
+      prisma.subscriptionEvent.findUnique.mockResolvedValue(null);
+
+      await service.handle(rawBody, 'sig');
+
+      // An unfiltered lookup would attach the event to whichever row came first.
+      expect(tx.subscription.findFirst).not.toHaveBeenCalled();
+      expect(tx.subscriptionEvent.update).not.toHaveBeenCalled();
     });
   });
 

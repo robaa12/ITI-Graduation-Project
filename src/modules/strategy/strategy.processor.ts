@@ -8,10 +8,16 @@ import {
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { buildKnowledgeScope } from '../../common/knowledge-scope';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { toErrorMessage, toWorkflowRunStatus } from '../mastra/run-status';
 import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
+import {
+  strategyCreditReference,
+  strategyRevisionCreditReference,
+} from './strategy.service';
 import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
 
 /**
@@ -27,6 +33,7 @@ export class StrategyProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly mastra: MastraClient,
     private readonly accounting: WorkflowAccountingService,
+    private readonly generationCredits: GenerationCreditsService,
   ) {
     super();
   }
@@ -85,7 +92,14 @@ export class StrategyProcessor extends WorkerHost {
         projectId: strategy.campaign.projectId,
         status: KnowledgeSourceStatus.READY,
       },
-      select: { id: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        url: true,
+        indexedAt: true,
+        metadata: true,
+      },
     });
 
     const workflow =
@@ -109,10 +123,10 @@ export class StrategyProcessor extends WorkerHost {
                 ...(strategy.input as Record<string, unknown>),
                 // This value is derived from the owned campaign, never accepted
                 // from a browser, so Mastra retrieval cannot cross project scope.
-                knowledgeScope: {
-                  projectId: strategy.campaign.projectId,
-                  sourceIds: readySources.map((source) => source.id),
-                },
+                knowledgeScope: buildKnowledgeScope(
+                  strategy.campaign.projectId,
+                  readySources,
+                ),
                 ...(strategy.campaign.project.brandProfile
                   ? { brandProfile: strategy.campaign.project.brandProfile }
                   : {}),
@@ -162,6 +176,9 @@ export class StrategyProcessor extends WorkerHost {
         ),
       );
     await this.accounting.collectOrSchedule(strategy.runId);
+    if (status === WorkflowRunStatus.FAILED) {
+      await this.refund(strategy.runId);
+    }
 
     this.logger.log(
       `Strategy ${strategyId} (run ${strategy.runId}) finished as ${status}`,
@@ -219,7 +236,15 @@ export class StrategyProcessor extends WorkerHost {
         .markTerminal(strategy.runId, WorkflowRunStatus.FAILED)
         .catch(() => undefined);
       await this.accounting.collectOrSchedule(strategy.runId);
+      await this.refund(strategy.runId);
     }
+  }
+
+  private async refund(runId: string): Promise<void> {
+    await Promise.all([
+      this.generationCredits.refund(strategyCreditReference(runId)),
+      this.generationCredits.refund(strategyRevisionCreditReference(runId)),
+    ]);
   }
 
   private async isCanceled(strategyId: string): Promise<boolean> {

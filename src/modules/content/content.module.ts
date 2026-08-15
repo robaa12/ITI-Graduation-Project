@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { GenerationCreditsModule } from '../generation-credits/generation-credits.module';
 import { MastraModule } from '../mastra/mastra.module';
 import { ContentExportService } from './content-export.service';
 import { ContentGenerationProcessor } from './content-generation.processor';
@@ -19,6 +20,7 @@ import { MastraContentGenerator } from './generator/mastra-content-generator';
   imports: [
     AuthModule,
     CampaignsModule,
+    GenerationCreditsModule,
     MastraModule,
     BullModule.registerQueue({ name: CONTENT_GENERATION_QUEUE }),
   ],

@@ -85,10 +85,51 @@ describe('WorkflowAccountingService', () => {
       'reconcile',
       { executionId: execution.id },
       expect.objectContaining({
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 2_000 },
+        attempts: 20,
+        backoff: { type: 'fixed', delay: 15_000 },
       }),
     );
+  });
+
+  it('repairs unavailable terminal usage when a result is opened later', async () => {
+    const unavailableExecution = {
+      ...execution,
+      accountingStatus: WorkflowAccountingStatus.UNAVAILABLE,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    };
+    const repairedExecution = {
+      ...unavailableExecution,
+      accountingStatus: WorkflowAccountingStatus.READY,
+      inputTokens: 120,
+      outputTokens: 30,
+      totalTokens: 150,
+    };
+    const service = createService({
+      prisma: {
+        workflowExecution: {
+          findUnique: jest.fn().mockResolvedValue(unavailableExecution),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findMany: jest.fn().mockResolvedValue([repairedExecution]),
+        },
+      },
+      mastra: {
+        getWorkflowUsage: jest.fn().mockResolvedValue({
+          status: 'ready',
+          inputTokens: 120,
+          outputTokens: 30,
+          totalTokens: 150,
+          estimatedCost: 0.0123,
+          costUnit: 'USD',
+          models: [],
+        }),
+      },
+    });
+
+    await expect(
+      service.reconcileForPresentation([unavailableExecution as never]),
+    ).resolves.toEqual([repairedExecution]);
   });
 
   it('stores tokens but not a partial total for unpriced models', async () => {

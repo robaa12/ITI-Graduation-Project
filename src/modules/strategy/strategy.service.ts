@@ -10,6 +10,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  GenerationCreditKind,
   MarketingStrategy,
   Prisma,
   StrategyApprovalStatus,
@@ -20,12 +21,15 @@ import {
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
+import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
 import { ReviewStrategyDto } from './dto/review-strategy.dto';
 import { RegenerateStrategySectionDto } from './dto/regenerate-strategy-section.dto';
@@ -53,6 +57,8 @@ export class StrategyService {
     @InjectQueue(STRATEGY_QUEUE)
     private readonly queue: Queue<StrategyJob>,
     private readonly mastra: MastraClient,
+    private readonly generationCredits: GenerationCreditsService,
+    private readonly accounting: WorkflowAccountingService,
   ) {}
 
   /**
@@ -68,13 +74,26 @@ export class StrategyService {
     campaignId: string,
     input: Record<string, unknown>,
   ): Promise<MarketingStrategy> {
-    await this.campaignsService.findOwnedOrFail(userId, campaignId);
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      userId,
+      campaignId,
+    );
 
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    if (jsonByteLength(input) > MAX_WORKFLOW_INPUT_BYTES) {
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const authoritativeInput = { ...input, temporalContext };
+
+    if (jsonByteLength(authoritativeInput) > MAX_WORKFLOW_INPUT_BYTES) {
       throw new BadRequestException(
         `Workflow input must serialise to at most ${MAX_WORKFLOW_INPUT_BYTES} bytes`,
       );
@@ -88,10 +107,16 @@ export class StrategyService {
         data: {
           campaignId,
           runId,
-          input: input as Prisma.InputJsonValue,
+          input: authoritativeInput as Prisma.InputJsonValue,
           status: WorkflowRunStatus.PENDING,
         },
       });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.STRATEGY,
+        strategyCreditReference(runId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: runId,
@@ -134,6 +159,7 @@ export class StrategyService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(strategyCreditReference(runId));
 
       this.logger.error(`Could not enqueue strategy ${record.id}: ${message}`);
       throw new ServiceUnavailableException(
@@ -256,10 +282,12 @@ export class StrategyService {
 
   async findOne(userId: string, id: string) {
     const strategy = await this.findOwnedOrFail(userId, id);
-    const executions = await this.prisma.workflowExecution.findMany({
+    const storedExecutions = await this.prisma.workflowExecution.findMany({
       where: { strategyId: id },
       orderBy: { createdAt: 'asc' },
     });
+    const executions =
+      await this.accounting.reconcileForPresentation(storedExecutions);
     return { ...strategy, ...presentWorkflowAccounting(executions) };
   }
 
@@ -358,10 +386,24 @@ export class StrategyService {
       );
     }
 
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      user.id,
+      strategy.campaignId,
+    );
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
     const revisionInput = {
       strategy: strategy.output,
       section: dto.section,
       feedback: dto.feedback.trim(),
+      temporalContext,
     };
 
     const revisionRunId = randomUUID();
@@ -386,6 +428,12 @@ export class StrategyService {
       if (count === 0) {
         throw new ConflictException(`Strategy ${id} is already being updated`);
       }
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        user.id,
+        GenerationCreditKind.STRATEGY_SECTION_REVISION,
+        strategyRevisionCreditReference(revisionRunId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: revisionRunId,
@@ -434,6 +482,9 @@ export class StrategyService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(
+        strategyRevisionCreditReference(revisionRunId),
+      );
       throw error;
     }
 
@@ -493,6 +544,15 @@ export class StrategyService {
       }
     }
 
+    if (strategy.runId) {
+      await Promise.all([
+        this.generationCredits.refund(strategyCreditReference(strategy.runId)),
+        this.generationCredits.refund(
+          strategyRevisionCreditReference(strategy.runId),
+        ),
+      ]);
+    }
+
     return this.findOwnedOrFail(userId, id);
   }
 
@@ -511,4 +571,12 @@ export class StrategyService {
 
     return strategy;
   }
+}
+
+export function strategyCreditReference(runId: string): string {
+  return `strategy:${runId}`;
+}
+
+export function strategyRevisionCreditReference(runId: string): string {
+  return `strategy-revision:${runId}`;
 }

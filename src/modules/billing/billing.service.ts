@@ -8,10 +8,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Inject } from '@nestjs/common';
-import { BillingInterval, SubscriptionStatus } from '@prisma/client';
+import {
+  BillingInterval,
+  PlanChangeKind,
+  Prisma,
+  SubscriptionStatus,
+} from '@prisma/client';
 import Stripe from 'stripe';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { ChangePlanDto } from './dto/change-plan.dto';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { STRIPE_CLIENT } from './stripe.provider';
@@ -48,6 +54,30 @@ export function toBillingInterval(interval: 'month' | 'year'): BillingInterval {
     : BillingInterval.YEARLY;
 }
 
+/**
+ * Carries the exact purchase back to the billing page. This lets the browser
+ * distinguish a newly purchased plan from the still-active previous plan
+ * while Stripe's webhook is being applied.
+ */
+export function checkoutSuccessUrl(
+  configuredUrl: string,
+  planCode: string,
+  interval: 'month' | 'year',
+): string {
+  const url = new URL(configuredUrl);
+  url.searchParams.set('completedPlan', planCode);
+  url.searchParams.set('interval', interval);
+  url.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
+  // Stripe replaces this literal placeholder after Checkout. URLSearchParams
+  // percent-encodes braces, so restore only this trusted fixed token.
+  return url
+    .toString()
+    .replace(
+      encodeURIComponent('{CHECKOUT_SESSION_ID}'),
+      '{CHECKOUT_SESSION_ID}',
+    );
+}
+
 /** Billing period start from a Stripe subscription (v22 nests it on the item). */
 export function currentPeriodStart(sub: Stripe.Subscription): Date | undefined {
   const item = sub.items?.data?.[0];
@@ -64,6 +94,103 @@ export function currentPeriodEnd(sub: Stripe.Subscription): Date | undefined {
     : undefined;
 }
 
+/** Statuses where Stripe will not accept a plan change until billing is fixed. */
+const PAYMENT_BLOCKED_STATUSES: SubscriptionStatus[] = [
+  SubscriptionStatus.PAST_DUE,
+  SubscriptionStatus.UNPAID,
+  SubscriptionStatus.PAUSED,
+];
+
+/** How long a quoted plan-change price stays honourable. */
+const QUOTE_TTL_MS = 15 * 60 * 1000;
+
+export type PlanChangeDirection = PlanChangeKind | 'NOOP';
+
+/**
+ * Which way a plan switch runs, which decides whether it is charged now or
+ * scheduled for the period end.
+ *
+ * Tier wins over interval: moving to a bigger plan is an upgrade even when it
+ * also shortens the commitment. Only when the tier is identical does the
+ * interval decide, where committing to a year is the upgrade and dropping back
+ * to a month is the downgrade.
+ */
+export function classifyPlanChange(
+  from: { sortOrder: number; interval: 'month' | 'year' },
+  to: { sortOrder: number; interval: 'month' | 'year' },
+): PlanChangeDirection {
+  if (to.sortOrder > from.sortOrder) return PlanChangeKind.UPGRADE;
+  if (to.sortOrder < from.sortOrder) return PlanChangeKind.DOWNGRADE;
+  if (from.interval === to.interval) return 'NOOP';
+  return to.interval === 'year'
+    ? PlanChangeKind.UPGRADE
+    : PlanChangeKind.DOWNGRADE;
+}
+
+/**
+ * Splits a proration preview into the two figures a customer actually asks
+ * about: what they got back for the time they had already paid for, and what
+ * the new plan costs for the rest of the period.
+ */
+export function summarizeProration(preview: Stripe.Invoice): {
+  unusedCreditCents: number;
+  newPlanChargeCents: number;
+} {
+  let unusedCreditCents = 0;
+  let newPlanChargeCents = 0;
+
+  for (const line of preview.lines?.data ?? []) {
+    if (line.amount < 0) unusedCreditCents += -line.amount;
+    else newPlanChargeCents += line.amount;
+  }
+
+  return { unusedCreditCents, newPlanChargeCents };
+}
+
+/** The interval a Stripe Price bills on, defaulting to monthly. */
+function priceInterval(price: Stripe.Price | undefined): 'month' | 'year' {
+  return price?.recurring?.interval === 'year' ? 'year' : 'month';
+}
+
+/** Columns that together describe a queued change, cleared as one unit. */
+const CLEAR_PENDING_CHANGE = {
+  pendingPlanId: null,
+  pendingInterval: null,
+  pendingEffectiveAt: null,
+  stripeScheduleId: null,
+} as const;
+
+/**
+ * Raised when the local row references a Stripe subscription that Stripe no
+ * longer has. Callers recover by sending the customer through a fresh Checkout
+ * rather than failing the request.
+ */
+class StripeSubscriptionMissingError extends Error {}
+
+/** Everything a plan switch needs, resolved once and passed down. */
+type PlanChangeContext = {
+  subscription: Prisma.SubscriptionGetPayload<object>;
+  plan: Prisma.PlanGetPayload<object>;
+  priceId: string;
+  interval: 'month' | 'year';
+  billingInterval: BillingInterval;
+  current: Stripe.Subscription;
+  item: Stripe.SubscriptionItem;
+  direction: PlanChangeDirection;
+};
+
+export type PlanChangeResult = {
+  /** Stripe Checkout URL when payment is required, otherwise null. */
+  url: string | null;
+  /** Secret used by Stripe.js only when the custom Elements UI is requested. */
+  clientSecret?: string;
+  sessionId?: string;
+  kind?: PlanChangeDirection;
+  /** True when the change was queued for the period end instead of applied. */
+  scheduled?: boolean;
+  effectiveAt?: Date | null;
+};
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -71,6 +198,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly generationCredits: GenerationCreditsService,
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
   ) {}
 
@@ -86,16 +214,41 @@ export class BillingService {
         sortOrder: true,
         priceMonthlyCents: true,
         priceYearlyCents: true,
+        generationCredits: true,
       },
     });
   }
 
+  /** Current monthly generation allowance, including free accounts. */
+  getCreditUsage(userId: string) {
+    return this.generationCredits.getUsage(userId);
+  }
+
   /** The authenticated user's subscription with its plan, or null. */
-  getSubscription(userId: string) {
-    return this.prisma.subscription.findUnique({
+  async getSubscription(userId: string) {
+    const subscription = await this.prisma.subscription.findUnique({
       where: { userId },
-      include: { plan: true },
+      include: { plan: true, pendingPlan: true },
     });
+
+    if (
+      subscription?.status === SubscriptionStatus.INCOMPLETE &&
+      subscription.checkoutSessionId &&
+      !subscription.stripeSubscriptionId
+    ) {
+      const session = await this.retrieveCheckoutSessionOrFail(
+        subscription.checkoutSessionId,
+      );
+      if (session.status === 'complete') {
+        await this.reconcileCompletedCheckout(userId, subscription, session);
+        return this.prisma.subscription.findUnique({
+          where: { userId },
+          include: { plan: true, pendingPlan: true },
+        });
+      }
+    }
+
+    return subscription;
   }
 
   /**
@@ -109,9 +262,19 @@ export class BillingService {
   async createCheckoutSession(
     userId: string,
     dto: CreateCheckoutDto,
-  ): Promise<{ url: string }> {
+  ): Promise<{
+    url: string | null;
+    clientSecret?: string;
+    sessionId?: string;
+  }> {
     const plan = await this.findActivePlanOrFail(dto.planCode);
+    if (plan.code === 'free') {
+      throw new BadRequestException(
+        'The Free plan is included with every account and does not use checkout',
+      );
+    }
     const billingInterval = toBillingInterval(dto.interval);
+    const customUi = dto.uiMode === 'custom';
     const priceId =
       dto.interval === 'month'
         ? plan.stripeMonthlyPriceId
@@ -174,28 +337,61 @@ export class BillingService {
       );
 
       if (pendingSession.status === 'open') {
+        const pendingMatchesUi = customUi
+          ? pendingSession.ui_mode === 'elements' &&
+            Boolean(pendingSession.client_secret)
+          : (pendingSession.ui_mode === 'hosted_page' ||
+              pendingSession.ui_mode === null) &&
+            Boolean(pendingSession.url);
+
         if (
           currentSubscription.planId !== plan.id ||
-          currentSubscription.billingInterval !== billingInterval
+          currentSubscription.billingInterval !== billingInterval ||
+          !pendingMatchesUi
         ) {
-          throw new ConflictException(
-            'A checkout for another plan is already in progress',
-          );
-        }
+          // Checkout Sessions cannot be edited to replace subscription line
+          // items. Expire the stale plan selection so this request can create
+          // a fresh session with the requested trusted Price.
+          try {
+            await this.stripe.checkout.sessions.expire(pendingSession.id);
+          } catch (error) {
+            this.logger.error(
+              `Could not expire stale Checkout Session ${pendingSession.id}`,
+              error as Error,
+            );
+            throw new ServiceUnavailableException(
+              'Could not replace the previous checkout, please try again',
+            );
+          }
+        } else {
+          if (customUi && pendingSession.client_secret) {
+            return {
+              url: null,
+              clientSecret: pendingSession.client_secret,
+              sessionId: pendingSession.id,
+            };
+          }
 
-        if (!pendingSession.url) {
+          if (!customUi && pendingSession.url) {
+            return { url: pendingSession.url };
+          }
+
           throw new ServiceUnavailableException(
             'Stripe returned a malformed Checkout Session',
           );
         }
-
-        return { url: pendingSession.url };
       }
 
       if (pendingSession.status === 'complete') {
-        throw new ConflictException(
-          'The previous checkout is complete and is still being processed',
+        await this.reconcileCompletedCheckout(
+          userId,
+          currentSubscription,
+          pendingSession,
         );
+        // The webhook may arrive a little later than the browser redirect.
+        // Reconcile from Stripe here, then safely route the new request through
+        // the normal prorated plan-change flow instead of blocking the user.
+        return this.changePlan(userId, dto);
       }
     }
 
@@ -207,15 +403,30 @@ export class BillingService {
 
     let session: Stripe.Checkout.Session;
     try {
+      const completionUrl = checkoutSuccessUrl(
+        this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
+        plan.code,
+        dto.interval,
+      );
       session = await this.stripe.checkout.sessions.create(
         {
           mode: 'subscription',
+          ...(customUi
+            ? { ui_mode: 'elements' as const, return_url: completionUrl }
+            : {
+                success_url: completionUrl,
+                cancel_url:
+                  this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+              }),
           customer: stripeCustomerId,
           line_items: [{ price: priceId, quantity: 1 }],
-          success_url:
-            this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
-          cancel_url:
-            this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+          // Keep the hosted page focused on card entry. Automatic payment
+          // methods otherwise show a collapsed picker (Card, Cash App, Bank),
+          // which makes the actual card fields look missing until Card is
+          // manually selected. `always` also saves a card when customer credit
+          // makes the first invoice free.
+          payment_method_types: ['card'],
+          payment_method_collection: 'always',
           client_reference_id: userId,
           metadata: { userId },
           subscription_data: {
@@ -227,7 +438,11 @@ export class BillingService {
           },
         },
         {
-          idempotencyKey: `checkout:${userId}:${checkoutGeneration}`,
+          // A hosted session and a custom-UI session have different immutable
+          // parameters. Keep their idempotency namespaces separate so a user
+          // migrating an expired hosted checkout to Elements does not receive
+          // Stripe's "same key, different parameters" rejection.
+          idempotencyKey: `checkout:${userId}:${checkoutGeneration}:${plan.id}:${dto.interval}${customUi ? ':elements' : ''}`,
         },
       );
     } catch (error) {
@@ -240,7 +455,7 @@ export class BillingService {
       );
     }
 
-    if (!session.url || !session.id) {
+    if (!session.id || (customUi ? !session.client_secret : !session.url)) {
       throw new ServiceUnavailableException(
         'Stripe returned a malformed Checkout Session',
       );
@@ -284,38 +499,57 @@ export class BillingService {
       });
     }
 
-    return { url: session.url };
+    return customUi
+      ? {
+          url: null,
+          clientSecret: session.client_secret!,
+          sessionId: session.id,
+        }
+      : { url: session.url! };
   }
 
   /**
-   * Changes the current plan and bills the prorated difference through a
-   * Stripe-hosted invoice the customer must pay before the change completes
-   * (`proration_behavior: always_invoice`). Only the new plan's trusted Prices
-   * are accepted — never arbitrary ids.
+   * Prices a plan switch without applying it, and stores the result so the
+   * amount the customer confirms is the amount they are charged.
    *
-   * Returns `{ url }` when there is an amount due (the customer is redirected
-   * to Stripe to pay the difference) or `{ url: null }` when the switch is a
-   * pure downgrade/credit with nothing to pay. Cancelled or in-Stripe-deleted
-   * subscriptions are re-subscribed through a fresh Checkout session instead.
+   * An upgrade is priced from Stripe's proration preview. A downgrade owes
+   * nothing now — it is scheduled for the end of the period the customer has
+   * already paid for — so it quotes zero and reports when it will take effect.
+   */
+  async previewPlanChange(userId: string, dto: ChangePlanDto) {
+    const context = await this.resolvePlanChange(userId, dto);
+
+    if (context.direction === 'NOOP') {
+      return this.noopQuote(context);
+    }
+
+    const quote = await this.buildQuote(userId, context);
+    return this.toQuoteResponse(quote, context);
+  }
+
+  /**
+   * Applies a plan switch.
+   *
+   * An upgrade opens a payment-mode Stripe Checkout for the prorated
+   * difference; its completion webhook applies the new Price with proration
+   * disabled so the customer is never charged twice. A downgrade is scheduled
+   * at the period end instead, leaving the higher plan — and the credits that
+   * came with it — usable for the time already bought.
+   *
+   * Returns `{ url }` when payment is needed, or `{ url: null }` with the
+   * scheduling details when it is not. Cancelled or in-Stripe-deleted
+   * subscriptions are re-subscribed through a fresh Checkout session.
    */
   async changePlan(
     userId: string,
     dto: ChangePlanDto,
-  ): Promise<{ url: string | null }> {
+  ): Promise<PlanChangeResult> {
     const subscription = await this.findOwnSubscriptionOrFail(userId);
-    const plan = await this.findActivePlanOrFail(dto.planCode);
-    const billingInterval = toBillingInterval(dto.interval);
-    const priceId =
-      dto.interval === 'month'
-        ? plan.stripeMonthlyPriceId
-        : plan.stripeYearlyPriceId;
 
-    if (!priceId) {
-      throw new BadRequestException(
-        `Plan "${dto.planCode}" has no configured ${
-          dto.interval === 'month' ? 'monthly' : 'yearly'
-        } price`,
-      );
+    // Returning to Free is not a plan switch — there is no Price to move to.
+    // It ends the paid subscription when the paid period runs out.
+    if (dto.planCode === 'free') {
+      return this.scheduleReturnToFree(userId, subscription);
     }
 
     // A cancelled subscription can't be updated in place; the customer
@@ -329,77 +563,411 @@ export class BillingService {
       return this.createCheckoutSession(userId, dto);
     }
 
+    let context: PlanChangeContext;
+    try {
+      context = await this.resolvePlanChange(userId, dto, subscription);
+    } catch (error) {
+      // The local row points at a Stripe subscription that is gone; start over.
+      if (error instanceof StripeSubscriptionMissingError) {
+        return this.createCheckoutSession(userId, dto);
+      }
+      throw error;
+    }
+
+    if (context.direction === 'NOOP') {
+      return { url: null, kind: 'NOOP', scheduled: false, effectiveAt: null };
+    }
+
+    const quote = await this.resolveConfirmedQuote(userId, dto, context);
+
+    return context.direction === PlanChangeKind.DOWNGRADE
+      ? this.applyScheduledDowngrade(userId, context, quote)
+      : this.applyUpgrade(userId, context, quote, dto.uiMode);
+  }
+
+  /**
+   * Drops a scheduled downgrade so the customer stays on the plan they have.
+   * Releasing the Stripe schedule leaves the live subscription untouched.
+   */
+  async cancelPendingPlanChange(userId: string) {
+    const subscription = await this.findOwnSubscriptionOrFail(userId);
+
+    if (!subscription.pendingPlanId) {
+      throw new ConflictException('There is no scheduled plan change to undo');
+    }
+
+    try {
+      if (subscription.stripeScheduleId) {
+        await this.stripe.subscriptionSchedules.release(
+          subscription.stripeScheduleId,
+        );
+      } else if (
+        subscription.cancelAtPeriodEnd &&
+        subscription.stripeSubscriptionId
+      ) {
+        await this.stripe.subscriptions.update(
+          subscription.stripeSubscriptionId,
+          { cancel_at_period_end: false },
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        'Failed to release the scheduled plan change',
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not undo the scheduled change, please try again',
+      );
+    }
+
+    await this.prisma.subscription.update({
+      where: { userId },
+      data: {
+        ...CLEAR_PENDING_CHANGE,
+        cancelAtPeriodEnd: false,
+      },
+    });
+
+    return this.getSubscription(userId);
+  }
+
+  /**
+   * Loads everything a plan switch needs and decides which way it runs.
+   * Throws `StripeSubscriptionMissingError` when Stripe no longer knows about
+   * the subscription, which callers translate into a fresh Checkout.
+   */
+  private async resolvePlanChange(
+    userId: string,
+    dto: ChangePlanDto,
+    preloaded?: Prisma.SubscriptionGetPayload<object>,
+  ): Promise<PlanChangeContext> {
+    const subscription =
+      preloaded ?? (await this.findOwnSubscriptionOrFail(userId));
+    const plan = await this.findActivePlanOrFail(dto.planCode);
+
+    if (plan.code === 'free') {
+      throw new BadRequestException(
+        'The Free plan has no price to switch to; cancel the paid plan instead',
+      );
+    }
+
+    const priceId =
+      dto.interval === 'month'
+        ? plan.stripeMonthlyPriceId
+        : plan.stripeYearlyPriceId;
+
+    if (!priceId) {
+      throw new BadRequestException(
+        `Plan "${dto.planCode}" has no configured ${
+          dto.interval === 'month' ? 'monthly' : 'yearly'
+        } price`,
+      );
+    }
+
+    if (!subscription.stripeSubscriptionId) {
+      throw new StripeSubscriptionMissingError();
+    }
+
+    // Stripe refuses plan changes while an invoice is unpaid, and silently
+    // letting the customer try produces an opaque failure. Send them to the
+    // portal to fix the payment method first.
+    if (PAYMENT_BLOCKED_STATUSES.includes(subscription.status)) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'SUBSCRIPTION_PAYMENT_REQUIRED',
+        message:
+          'Update your payment details before changing plan. Your last payment did not go through.',
+        portalRequired: true,
+      });
+    }
+
     let current: Stripe.Subscription;
     try {
       current = await this.stripe.subscriptions.retrieve(
         subscription.stripeSubscriptionId,
       );
     } catch {
-      return this.createCheckoutSession(userId, dto);
+      throw new StripeSubscriptionMissingError();
     }
 
     const item = current.items.data[0];
-
     if (!item) {
       throw new ConflictException('Stripe subscription has no items');
     }
 
-    if (current.pending_update) {
-      throw new ConflictException(
-        'A subscription plan change is already awaiting payment',
-      );
+    const fromPlan = subscription.planId
+      ? await this.prisma.plan.findUnique({
+          where: { id: subscription.planId },
+        })
+      : null;
+
+    const direction =
+      item.price.id === priceId
+        ? 'NOOP'
+        : classifyPlanChange(
+            {
+              sortOrder: fromPlan?.sortOrder ?? 0,
+              interval: priceInterval(item.price),
+            },
+            { sortOrder: plan.sortOrder, interval: dto.interval },
+          );
+
+    return {
+      subscription,
+      plan,
+      priceId,
+      interval: dto.interval,
+      billingInterval: toBillingInterval(dto.interval),
+      current,
+      item,
+      direction,
+    };
+  }
+
+  /** Prices the switch and persists it as a single-use quote. */
+  private async buildQuote(userId: string, context: PlanChangeContext) {
+    const { subscription, plan, priceId, current, item, direction } = context;
+    const credits = await this.generationCredits.getUsage(userId);
+    const periodEnd =
+      currentPeriodEnd(current) ?? subscription.currentPeriodEnd;
+
+    let amountDueCents = 0;
+    let currency = item.price.currency;
+    let unusedCreditCents = 0;
+    let newPlanChargeCents = 0;
+
+    if (direction === PlanChangeKind.UPGRADE) {
+      const preview = await this.previewProration(current.id, item.id, priceId);
+      const split = summarizeProration(preview);
+      amountDueCents = Math.max(0, preview.total);
+      currency = preview.currency;
+      unusedCreditCents = split.unusedCreditCents;
+      newPlanChargeCents = split.newPlanChargeCents;
     }
 
-    if (item.price.id === priceId) {
-      return { url: null };
+    return this.prisma.planChangeQuote.create({
+      data: {
+        subscriptionId: subscription.id,
+        userId,
+        kind: direction as PlanChangeKind,
+        planId: plan.id,
+        interval: context.billingInterval,
+        fromPriceId: item.price.id,
+        targetPriceId: priceId,
+        amountDueCents,
+        currency,
+        unusedCreditCents,
+        newPlanChargeCents,
+        creditsLimit: credits.limit,
+        creditsUsed: credits.used,
+        creditsNewLimit: plan.generationCredits,
+        effectiveAt: direction === PlanChangeKind.DOWNGRADE ? periodEnd : null,
+        expiresAt: new Date(Date.now() + QUOTE_TTL_MS),
+      },
+    });
+  }
+
+  /**
+   * Returns the quote the customer confirmed, or a `409` carrying a fresh one
+   * when the figure they saw no longer holds — so a moved price is always
+   * re-confirmed rather than silently charged.
+   */
+  private async resolveConfirmedQuote(
+    userId: string,
+    dto: ChangePlanDto,
+    context: PlanChangeContext,
+  ) {
+    if (!dto.quoteId) {
+      return this.buildQuote(userId, context);
     }
+
+    const stored = await this.prisma.planChangeQuote.findUnique({
+      where: { id: dto.quoteId },
+    });
+
+    const stale =
+      !stored ||
+      stored.userId !== userId ||
+      stored.consumedAt !== null ||
+      stored.expiresAt <= new Date() ||
+      stored.targetPriceId !== context.priceId ||
+      stored.fromPriceId !== context.item.price.id ||
+      stored.kind !== context.direction;
+
+    if (stale) {
+      const fresh = await this.buildQuote(userId, context);
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'PLAN_CHANGE_QUOTE_STALE',
+        message:
+          'The price for this change has been recalculated. Please review and confirm it again.',
+        quote: this.toQuoteResponse(fresh, context),
+      });
+    }
+
+    return stored;
+  }
+
+  /** Opens Stripe Checkout for the prorated difference on an upgrade. */
+  private async applyUpgrade(
+    userId: string,
+    context: PlanChangeContext,
+    quote: { id: string; amountDueCents: number; currency: string },
+    uiMode: 'hosted' | 'custom' = 'hosted',
+  ): Promise<PlanChangeResult> {
+    const { subscription, plan, priceId, current, item } = context;
+    const customUi = uiMode === 'custom';
+
+    // An upgrade supersedes anything the customer had queued for the period
+    // end, otherwise the schedule would quietly undo the plan they just paid for.
+    await this.releasePendingSchedule(userId, subscription);
 
     try {
-      const updated = await this.stripe.subscriptions.update(
-        subscription.stripeSubscriptionId,
+      if (quote.amountDueCents <= 0) {
+        // Nothing to collect — usually an upgrade so late in the period that
+        // the unused credit covers it. Apply it directly.
+        const updated = await this.stripe.subscriptions.update(
+          current.id,
+          {
+            items: [{ id: item.id, price: priceId }],
+            proration_behavior: 'always_invoice',
+            payment_behavior: 'pending_if_incomplete',
+          },
+          {
+            idempotencyKey: `change-plan:${current.id}:${item.price.id}:${priceId}`,
+          },
+        );
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.subscription.update({
+            where: { userId },
+            data: {
+              planId: plan.id,
+              billingInterval: context.billingInterval,
+              stripePriceId: priceId,
+              status: mapSubscriptionStatus(updated.status),
+              currentPeriodStart: currentPeriodStart(updated),
+              currentPeriodEnd: currentPeriodEnd(updated),
+              ...CLEAR_PENDING_CHANGE,
+            },
+          });
+          await tx.planChangeQuote.update({
+            where: { id: quote.id },
+            data: { consumedAt: new Date() },
+          });
+          // Raise the allowance to the new plan in the same transaction that
+          // applies the plan, so the two can never disagree.
+          await this.generationCredits.getUsageInTransaction(tx, userId);
+        });
+
+        return {
+          url: null,
+          kind: PlanChangeKind.UPGRADE,
+          scheduled: false,
+          effectiveAt: null,
+        };
+      }
+
+      const stripeCustomerId =
+        subscription.stripeCustomerId ??
+        (typeof current.customer === 'string'
+          ? current.customer
+          : current.customer?.id);
+
+      if (!stripeCustomerId) {
+        throw new ServiceUnavailableException(
+          'Stripe subscription has no billing customer',
+        );
+      }
+
+      // Subscription updates normally charge a saved card immediately. Use a
+      // payment-mode Checkout Session instead so the customer explicitly
+      // confirms the prorated charge. The webhook changes the Price only after
+      // this payment succeeds.
+      const completionUrl = checkoutSuccessUrl(
+        this.configService.getOrThrow<string>('STRIPE_SUCCESS_URL'),
+        plan.code,
+        context.interval,
+      );
+      const checkout = await this.stripe.checkout.sessions.create(
         {
-          items: [{ id: item.id, price: priceId }],
-          // Invoice the prorated difference immediately and keep the change
-          // pending until the customer pays it on Stripe's hosted page.
-          proration_behavior: 'always_invoice',
-          payment_behavior: 'pending_if_incomplete',
+          mode: 'payment',
+          ...(customUi
+            ? { ui_mode: 'elements' as const, return_url: completionUrl }
+            : {
+                success_url: completionUrl,
+                cancel_url:
+                  this.configService.getOrThrow<string>('STRIPE_CANCEL_URL'),
+              }),
+          customer: stripeCustomerId,
+          payment_method_types: ['card'],
+          line_items: [
+            {
+              price_data: {
+                currency: quote.currency,
+                product_data: {
+                  name: `${plan.name} plan upgrade`,
+                  description: 'Prorated plan difference',
+                },
+                unit_amount: quote.amountDueCents,
+              },
+              quantity: 1,
+            },
+          ],
+          payment_intent_data: {
+            setup_future_usage: 'off_session',
+            metadata: {
+              billingFlow: 'plan_change',
+              userId,
+              stripeSubscriptionId: current.id,
+              sourcePriceId: item.price.id,
+              targetPriceId: priceId,
+            },
+          },
+          client_reference_id: userId,
+          metadata: {
+            billingFlow: 'plan_change',
+            userId,
+            planId: plan.id,
+            interval: context.interval,
+            quoteId: quote.id,
+            stripeSubscriptionId: current.id,
+            sourcePriceId: item.price.id,
+            targetPriceId: priceId,
+          },
         },
         {
-          idempotencyKey: `change-plan:${subscription.stripeSubscriptionId}:${item.price.id}:${priceId}`,
+          idempotencyKey: `plan-change-checkout:${current.id}:${item.price.id}:${priceId}:${quote.id}${customUi ? ':elements' : ''}`,
         },
       );
 
-      const invoice = await this.resolveLatestInvoice(updated);
-
-      // An amount due means the customer must confirm the switch by paying the
-      // difference on Stripe's hosted invoice page.
-      if (
-        updated.pending_update ||
-        (invoice && invoice.amount_due > 0 && invoice.status !== 'paid')
-      ) {
-        if (!invoice?.hosted_invoice_url) {
-          throw new ServiceUnavailableException(
-            'Stripe did not return a payment URL for the pending plan change',
-          );
-        }
-
-        return { url: invoice.hosted_invoice_url };
+      if (customUi ? !checkout.client_secret : !checkout.url) {
+        throw new ServiceUnavailableException(
+          'Stripe did not return secure payment details for the plan change',
+        );
       }
 
-      await this.prisma.subscription.update({
-        where: { userId },
-        data: {
-          planId: plan.id,
-          billingInterval,
-          stripePriceId: priceId,
-          status: mapSubscriptionStatus(updated.status),
-          currentPeriodStart: currentPeriodStart(updated),
-          currentPeriodEnd: currentPeriodEnd(updated),
-        },
+      // Spend the quote as soon as it has a payment attached to it, so a second
+      // tab cannot open a second Checkout against the same quoted figure.
+      await this.prisma.planChangeQuote.update({
+        where: { id: quote.id },
+        data: { consumedAt: new Date() },
       });
 
-      return { url: null };
+      return {
+        url: customUi ? null : checkout.url,
+        ...(customUi
+          ? {
+              clientSecret: checkout.client_secret!,
+              sessionId: checkout.id,
+            }
+          : {}),
+        kind: PlanChangeKind.UPGRADE,
+        scheduled: false,
+        effectiveAt: null,
+      };
     } catch (error) {
+      if (error instanceof ServiceUnavailableException) throw error;
       this.logger.error(
         'Failed to change Stripe subscription plan',
         error as Error,
@@ -408,6 +976,257 @@ export class BillingService {
         'Could not change plan, please try again',
       );
     }
+  }
+
+  /**
+   * Queues a downgrade for the end of the paid period using a Stripe
+   * Subscription Schedule. Nothing is invoiced and nothing changes today, so
+   * the customer keeps the plan and the credits they already paid for.
+   */
+  private async applyScheduledDowngrade(
+    userId: string,
+    context: PlanChangeContext,
+    quote: { id: string },
+  ): Promise<PlanChangeResult> {
+    const { subscription, plan, priceId, current } = context;
+
+    try {
+      const schedule = await this.upsertSchedule(
+        current.id,
+        subscription.stripeScheduleId,
+        priceId,
+      );
+      const effectiveAt =
+        currentPeriodEnd(current) ?? subscription.currentPeriodEnd ?? null;
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.subscription.update({
+          where: { userId },
+          data: {
+            pendingPlanId: plan.id,
+            pendingInterval: context.billingInterval,
+            pendingEffectiveAt: effectiveAt,
+            stripeScheduleId: schedule.id,
+          },
+        });
+        await tx.planChangeQuote.update({
+          where: { id: quote.id },
+          data: { consumedAt: new Date() },
+        });
+      });
+
+      return {
+        url: null,
+        kind: PlanChangeKind.DOWNGRADE,
+        scheduled: true,
+        effectiveAt,
+      };
+    } catch (error) {
+      this.logger.error('Failed to schedule the downgrade', error as Error);
+      throw new ServiceUnavailableException(
+        'Could not schedule the plan change, please try again',
+      );
+    }
+  }
+
+  /**
+   * Creates or rewrites the schedule so the current price runs to the end of
+   * the paid period and the target price takes over from there.
+   */
+  private async upsertSchedule(
+    stripeSubscriptionId: string,
+    existingScheduleId: string | null,
+    targetPriceId: string,
+  ): Promise<Stripe.SubscriptionSchedule> {
+    const schedule = existingScheduleId
+      ? await this.stripe.subscriptionSchedules.retrieve(existingScheduleId)
+      : await this.stripe.subscriptionSchedules.create({
+          from_subscription: stripeSubscriptionId,
+        });
+
+    // A schedule can carry completed phases; the one to preserve is whichever
+    // is running right now.
+    const activePhase =
+      schedule.phases.find(
+        (phase) => phase.start_date === schedule.current_phase?.start_date,
+      ) ?? schedule.phases[0];
+
+    if (!activePhase) {
+      throw new ServiceUnavailableException(
+        'Stripe schedule has no active phase',
+      );
+    }
+
+    return this.stripe.subscriptionSchedules.update(schedule.id, {
+      end_behavior: 'release',
+      phases: [
+        {
+          start_date: activePhase.start_date,
+          end_date: activePhase.end_date,
+          items: activePhase.items.map((item) => ({
+            price: typeof item.price === 'string' ? item.price : item.price.id,
+            quantity: item.quantity ?? 1,
+          })),
+        },
+        // Open-ended: once the paid period runs out the customer simply renews
+        // on the cheaper price from then on. Nothing is prorated into it.
+        {
+          items: [{ price: targetPriceId, quantity: 1 }],
+          proration_behavior: 'none',
+        },
+      ],
+    });
+  }
+
+  /**
+   * Returning to Free ends the paid subscription when the period the customer
+   * already bought runs out, rather than cutting access off mid-period.
+   */
+  private async scheduleReturnToFree(
+    userId: string,
+    subscription: Prisma.SubscriptionGetPayload<object>,
+  ): Promise<PlanChangeResult> {
+    if (
+      !subscription.stripeSubscriptionId ||
+      subscription.status === SubscriptionStatus.CANCELLED
+    ) {
+      throw new ConflictException('There is no paid subscription to end');
+    }
+
+    const freePlan = await this.prisma.plan.findFirst({
+      where: { code: 'free', active: true },
+    });
+
+    try {
+      await this.releasePendingSchedule(userId, subscription);
+      const updated = await this.stripe.subscriptions.update(
+        subscription.stripeSubscriptionId,
+        { cancel_at_period_end: true },
+      );
+      const effectiveAt =
+        currentPeriodEnd(updated) ?? subscription.currentPeriodEnd ?? null;
+
+      await this.prisma.subscription.update({
+        where: { userId },
+        data: {
+          cancelAtPeriodEnd: true,
+          pendingPlanId: freePlan?.id ?? null,
+          pendingInterval: null,
+          pendingEffectiveAt: effectiveAt,
+        },
+      });
+
+      return {
+        url: null,
+        kind: PlanChangeKind.DOWNGRADE,
+        scheduled: true,
+        effectiveAt,
+      };
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      this.logger.error(
+        'Failed to schedule the return to the Free plan',
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not schedule the plan change, please try again',
+      );
+    }
+  }
+
+  /** Drops any queued downgrade so a newly applied plan is not undone later. */
+  private async releasePendingSchedule(
+    userId: string,
+    subscription: {
+      stripeScheduleId: string | null;
+      pendingPlanId: string | null;
+    },
+  ): Promise<void> {
+    if (!subscription.pendingPlanId && !subscription.stripeScheduleId) return;
+
+    if (subscription.stripeScheduleId) {
+      try {
+        await this.stripe.subscriptionSchedules.release(
+          subscription.stripeScheduleId,
+        );
+      } catch (error) {
+        // An already-released schedule is the state we want; keep going.
+        this.logger.warn(
+          `Could not release schedule ${subscription.stripeScheduleId}`,
+          error as Error,
+        );
+      }
+    }
+
+    await this.prisma.subscription.update({
+      where: { userId },
+      data: CLEAR_PENDING_CHANGE,
+    });
+  }
+
+  private previewProration(
+    stripeSubscriptionId: string,
+    itemId: string,
+    priceId: string,
+  ) {
+    return this.stripe.invoices.createPreview({
+      subscription: stripeSubscriptionId,
+      subscription_details: {
+        items: [{ id: itemId, price: priceId }],
+        proration_behavior: 'always_invoice',
+      },
+    });
+  }
+
+  /** Shapes a stored quote for the client. */
+  private toQuoteResponse(
+    quote: Prisma.PlanChangeQuoteGetPayload<object>,
+    context: PlanChangeContext,
+  ) {
+    return {
+      quoteId: quote.id,
+      kind: quote.kind,
+      amountDueCents: quote.amountDueCents,
+      currency: quote.currency,
+      isCredit: quote.kind === PlanChangeKind.DOWNGRADE,
+      effectiveAt: quote.effectiveAt,
+      expiresAt: quote.expiresAt,
+      breakdown: {
+        unusedCreditCents: quote.unusedCreditCents,
+        newPlanChargeCents: quote.newPlanChargeCents,
+      },
+      credits: {
+        limit: quote.creditsLimit,
+        used: quote.creditsUsed,
+        newLimit: quote.creditsNewLimit,
+        newRemaining: Math.max(0, quote.creditsNewLimit - quote.creditsUsed),
+        periodEnd: context.subscription.currentPeriodEnd,
+      },
+    };
+  }
+
+  /** The response for "you are already on this plan". */
+  private async noopQuote(context: PlanChangeContext) {
+    const credits = await this.generationCredits.getUsage(
+      context.subscription.userId,
+    );
+    return {
+      quoteId: null,
+      kind: 'NOOP' as const,
+      amountDueCents: 0,
+      currency: context.item.price.currency,
+      isCredit: false,
+      effectiveAt: null,
+      expiresAt: null,
+      breakdown: { unusedCreditCents: 0, newPlanChargeCents: 0 },
+      credits: {
+        limit: credits.limit,
+        used: credits.used,
+        newLimit: credits.limit,
+        newRemaining: credits.remaining,
+        periodEnd: context.subscription.currentPeriodEnd,
+      },
+    };
   }
 
   /**
@@ -448,6 +1267,34 @@ export class BillingService {
     return this.getSubscription(userId);
   }
 
+  async createBillingPortal(userId: string): Promise<{ url: string }> {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { userId },
+      select: { stripeCustomerId: true },
+    });
+    if (!subscription?.stripeCustomerId) {
+      throw new ConflictException(
+        'No billing account exists yet; choose a paid plan first',
+      );
+    }
+
+    try {
+      const portal = await this.stripe.billingPortal.sessions.create({
+        customer: subscription.stripeCustomerId,
+        return_url: `${this.configService.getOrThrow<string>('app.frontendUrl')}/settings#billing`,
+      });
+      return { url: portal.url };
+    } catch (error) {
+      this.logger.error(
+        'Failed to create Stripe billing portal',
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not open payment settings, please try again',
+      );
+    }
+  }
+
   private async findActivePlanOrFail(planCode: string) {
     const plan = await this.prisma.plan.findFirst({
       where: { code: planCode, active: true },
@@ -470,31 +1317,6 @@ export class BillingService {
     }
 
     return subscription;
-  }
-
-  /**
-   * The invoice generated by a plan change, whether Stripe returned it expanded
-   * or as a bare id.
-   */
-  private async resolveLatestInvoice(
-    subscription: Stripe.Subscription,
-  ): Promise<Stripe.Invoice | undefined> {
-    const latest = subscription.latest_invoice;
-
-    if (!latest) return undefined;
-    if (typeof latest === 'string') {
-      try {
-        return await this.stripe.invoices.retrieve(latest);
-      } catch (error) {
-        this.logger.warn(
-          `Could not retrieve latest invoice for subscription ${subscription.id}`,
-          error as Error,
-        );
-        return undefined;
-      }
-    }
-
-    return latest;
   }
 
   /**
@@ -558,5 +1380,62 @@ export class BillingService {
         'Could not verify the pending checkout, please try again',
       );
     }
+  }
+
+  private async reconcileCompletedCheckout(
+    userId: string,
+    local: {
+      planId: string | null;
+      billingInterval: BillingInterval | null;
+    },
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
+    const subscriptionId =
+      typeof session.subscription === 'string'
+        ? session.subscription
+        : session.subscription?.id;
+
+    if (!subscriptionId || !local.planId || !local.billingInterval) {
+      throw new ServiceUnavailableException(
+        'Stripe completed checkout without subscription details; please try again',
+      );
+    }
+
+    let remote: Stripe.Subscription;
+    try {
+      remote = await this.stripe.subscriptions.retrieve(subscriptionId);
+    } catch (error) {
+      this.logger.error(
+        `Could not retrieve completed Stripe subscription ${subscriptionId}`,
+        error as Error,
+      );
+      throw new ServiceUnavailableException(
+        'Could not confirm the completed subscription, please try again',
+      );
+    }
+
+    const priceId = remote.items.data[0]?.price?.id;
+    if (!priceId) {
+      throw new ServiceUnavailableException(
+        'Stripe completed checkout without a subscription price',
+      );
+    }
+
+    await this.prisma.subscription.update({
+      where: { userId },
+      data: {
+        planId: local.planId,
+        billingInterval: local.billingInterval,
+        stripeSubscriptionId: remote.id,
+        stripePriceId: priceId,
+        status: mapSubscriptionStatus(remote.status),
+        currentPeriodStart: currentPeriodStart(remote),
+        currentPeriodEnd: currentPeriodEnd(remote),
+        cancelAtPeriodEnd: remote.cancel_at_period_end,
+        canceledAt: remote.canceled_at
+          ? new Date(remote.canceled_at * 1000)
+          : null,
+      },
+    });
   }
 }

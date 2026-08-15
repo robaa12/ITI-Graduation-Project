@@ -1,0 +1,48 @@
+name: Automation Workflow CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+    paths:
+      - "automation-workflow/**"
+      - ".github/workflows/automation-workflow-ci.yml"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "automation-workflow/**"
+      - ".github/workflows/automation-workflow-ci.yml"
+
+jobs:
+  verify:
+    name: Test and build automation workflow
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: automation-workflow
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: automation-workflow/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

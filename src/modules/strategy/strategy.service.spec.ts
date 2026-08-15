@@ -15,12 +15,15 @@ describe('StrategyService cancellation', () => {
     updateMany: jest.fn(),
   };
   const mastra = { cancelRun: jest.fn() };
+  const generationCredits = { refund: jest.fn() };
   const prisma = { marketingStrategy };
   const service = new StrategyService(
     prisma as never,
     {} as never,
     {} as never,
     mastra as never,
+    generationCredits as never,
+    {} as never,
   );
 
   beforeEach(() => {
@@ -33,6 +36,7 @@ describe('StrategyService cancellation', () => {
       });
     marketingStrategy.updateMany.mockResolvedValue({ count: 1 });
     mastra.cancelRun.mockResolvedValue(undefined);
+    generationCredits.refund.mockResolvedValue(undefined);
   });
 
   it('persists cancellation and stops the matching Mastra run', async () => {
@@ -59,6 +63,7 @@ describe('StrategyService cancellation', () => {
       'marketingStrategyWorkflow',
       'mastra-run-id',
     );
+    expect(generationCredits.refund).toHaveBeenCalledTimes(2);
     expect(result.status).toBe(WorkflowRunStatus.CANCELED);
   });
 });

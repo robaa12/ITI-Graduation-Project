@@ -2,22 +2,28 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Campaign, CampaignStatus, Prisma } from '@prisma/client';
 
 import { hasAnyValue } from '../../common/has-any-value';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MastraClient } from '../mastra/mastra.client';
 import { ProjectsService } from '../projects/projects.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { GenerateCampaignTitleDto } from './dto/generate-campaign-title.dto';
 import { QueryCampaignsDto } from './dto/query-campaigns.dto';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
 @Injectable()
 export class CampaignsService {
+  private readonly logger = new Logger(CampaignsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly projectsService: ProjectsService,
+    private readonly mastra: MastraClient,
   ) {}
 
   async create(
@@ -89,6 +95,41 @@ export class CampaignsService {
         contents: { orderBy: { createdAt: 'desc' } },
       },
     });
+  }
+
+  /**
+   * Generates a short sidebar title without overwriting a title the user set
+   * while the model request was running.
+   */
+  async generateTitle(
+    userId: string,
+    id: string,
+    dto: GenerateCampaignTitleDto,
+  ): Promise<Campaign> {
+    const campaign = await this.findOwnedOrFail(userId, id);
+    if (!this.isUntitled(campaign.name)) return campaign;
+
+    let title: string;
+    try {
+      const generated = await this.mastra.generateChatTitle(dto);
+      title = this.validTitle(generated.title)
+        ? generated.title.trim()
+        : this.fallbackTitle(dto);
+    } catch (error) {
+      this.logger.warn(
+        `Chat title generation failed for campaign ${id}; using fallback: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      title = this.fallbackTitle(dto);
+    }
+
+    const updated = await this.prisma.campaign.updateMany({
+      where: { id, name: campaign.name },
+      data: { name: title },
+    });
+
+    // A manual rename may have won the race while the agent was thinking.
+    if (updated.count === 0) return this.findOwnedOrFail(userId, id);
+    return this.prisma.campaign.findUniqueOrThrow({ where: { id } });
   }
 
   /**
@@ -226,6 +267,60 @@ export class CampaignsService {
       ...(dto.startDate !== undefined ? { startDate } : {}),
       ...(dto.endDate !== undefined ? { endDate } : {}),
     };
+  }
+
+  private isUntitled(name: string): boolean {
+    return /^(?:New chat|Campaign chat \d+)$/i.test(name.trim());
+  }
+
+  private validTitle(title: unknown): title is string {
+    if (typeof title !== 'string') return false;
+    const words = title.trim().split(/\s+/u).filter(Boolean);
+    return words.length >= 4 && words.length <= 5 && title.length <= 120;
+  }
+
+  private fallbackTitle(dto: GenerateCampaignTitleDto): string {
+    const fillerWords = new Set([
+      'a',
+      'an',
+      'and',
+      'at',
+      'for',
+      'from',
+      'in',
+      'of',
+      'on',
+      'the',
+      'to',
+      'with',
+    ]);
+    const candidates = `${dto.brandName} ${dto.product}`
+      .replace(/[^\p{L}\p{N}'’-]+/gu, ' ')
+      .trim()
+      .split(/\s+/u)
+      .filter(
+        (word) => word && !fillerWords.has(word.toLocaleLowerCase()),
+      );
+    const words: string[] = [];
+
+    for (const word of [
+      ...candidates,
+      'Campaign',
+      'Launch',
+      'Strategy',
+      'Plan',
+    ]) {
+      if (
+        !words.some(
+          (item) => item.toLocaleLowerCase() === word.toLocaleLowerCase(),
+        )
+      ) {
+        words.push(word);
+      }
+      if (words.length === 5) break;
+    }
+
+    return words.slice(0, 5).join(' ');
   }
 
   /**

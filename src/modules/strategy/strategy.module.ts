@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { GenerationCreditsModule } from '../generation-credits/generation-credits.module';
 import { MastraModule } from '../mastra/mastra.module';
 import { WorkflowAccountingModule } from '../workflow-accounting/workflow-accounting.module';
 import {
@@ -17,6 +18,7 @@ import { StrategyService } from './strategy.service';
   imports: [
     AuthModule,
     CampaignsModule,
+    GenerationCreditsModule,
     MastraModule,
     WorkflowAccountingModule,
     BullModule.registerQueue({ name: STRATEGY_QUEUE }),

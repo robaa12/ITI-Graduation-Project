@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   CampaignContentRun,
+  GenerationCreditKind,
   Prisma,
   StrategyApprovalStatus,
   WorkflowAccountingStatus,
@@ -20,13 +21,16 @@ import {
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
+import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { GenerationCreditsService } from '../generation-credits/generation-credits.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
 import { StrategyService } from '../strategy/strategy.service';
 import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
@@ -47,6 +51,8 @@ export class ContentWorkflowService {
     @InjectQueue(CONTENT_WORKFLOW_QUEUE)
     private readonly queue: Queue<ContentWorkflowJob>,
     private readonly mastra: MastraClient,
+    private readonly generationCredits: GenerationCreditsService,
+    private readonly accounting: WorkflowAccountingService,
   ) {}
 
   /**
@@ -62,17 +68,29 @@ export class ContentWorkflowService {
     campaignId: string,
     body: Record<string, unknown>,
   ): Promise<CampaignContentRun> {
-    await this.campaignsService.findOwnedOrFail(userId, campaignId);
+    const campaign = await this.campaignsService.findOwnedOrFail(
+      userId,
+      campaignId,
+    );
 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    const { strategyId, input } = await this.buildInput(
+    const { strategyId, input: untrustedInput } = await this.buildInput(
       userId,
       campaignId,
       body,
     );
+    let temporalContext;
+    try {
+      temporalContext = buildWorkflowTemporalContext(campaign);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const input = { ...untrustedInput, temporalContext };
 
     validateContentWorkflowInput(input);
 
@@ -95,6 +113,12 @@ export class ContentWorkflowService {
           status: WorkflowRunStatus.PENDING,
         },
       });
+      await this.generationCredits.consumeInTransaction(
+        tx,
+        userId,
+        GenerationCreditKind.CONTENT_WORKFLOW,
+        contentWorkflowCreditReference(runId),
+      );
       await tx.workflowExecution.create({
         data: {
           mastraRunId: runId,
@@ -135,6 +159,9 @@ export class ContentWorkflowService {
           finishedAt: new Date(),
         },
       });
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(runId),
+      );
 
       this.logger.error(
         `Could not enqueue content run ${record.id}: ${message}`,
@@ -317,10 +344,12 @@ export class ContentWorkflowService {
 
   async findOne(userId: string, id: string) {
     const run = await this.findOwnedOrFail(userId, id);
-    const executions = await this.prisma.workflowExecution.findMany({
+    const storedExecutions = await this.prisma.workflowExecution.findMany({
       where: { contentRunId: id },
       orderBy: { createdAt: 'asc' },
     });
+    const executions =
+      await this.accounting.reconcileForPresentation(storedExecutions);
     return { ...run, ...presentWorkflowAccounting(executions) };
   }
 
@@ -370,6 +399,12 @@ export class ContentWorkflowService {
       }
     }
 
+    if (run.runId) {
+      await this.generationCredits.refund(
+        contentWorkflowCreditReference(run.runId),
+      );
+    }
+
     return this.findOwnedOrFail(userId, id);
   }
 
@@ -387,4 +422,8 @@ export class ContentWorkflowService {
 
     return run;
   }
+}
+
+export function contentWorkflowCreditReference(runId: string): string {
+  return `content-workflow:${runId}`;
 }

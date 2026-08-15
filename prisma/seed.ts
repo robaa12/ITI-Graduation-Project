@@ -20,6 +20,7 @@ type PlanSeed = {
   sortOrder: number;
   priceMonthlyCents?: number;
   priceYearlyCents?: number;
+  generationCredits: number;
 };
 
 const PLANS: PlanSeed[] = [
@@ -29,6 +30,8 @@ const PLANS: PlanSeed[] = [
     description: 'Explore the platform with basic limits.',
     sortOrder: 1,
     priceMonthlyCents: 0,
+    priceYearlyCents: 0,
+    generationCredits: 6,
   },
   {
     code: 'pro',
@@ -37,6 +40,7 @@ const PLANS: PlanSeed[] = [
     sortOrder: 2,
     priceMonthlyCents: 1500,
     priceYearlyCents: 15000,
+    generationCredits: 60,
   },
   {
     code: 'business',
@@ -45,6 +49,7 @@ const PLANS: PlanSeed[] = [
     sortOrder: 3,
     priceMonthlyCents: 4000,
     priceYearlyCents: 40000,
+    generationCredits: 240,
   },
 ];
 
@@ -82,6 +87,7 @@ async function main() {
           stripeYearlyPriceId: yearlyPriceId ?? null,
           priceMonthlyCents: plan.priceMonthlyCents ?? null,
           priceYearlyCents: plan.priceYearlyCents ?? null,
+          generationCredits: plan.generationCredits,
         },
         create: {
           code: plan.code,
@@ -94,6 +100,7 @@ async function main() {
           stripeYearlyPriceId: yearlyPriceId ?? null,
           priceMonthlyCents: plan.priceMonthlyCents ?? null,
           priceYearlyCents: plan.priceYearlyCents ?? null,
+          generationCredits: plan.generationCredits,
         },
       });
       console.log(`Seeded plan "${plan.code}"`);

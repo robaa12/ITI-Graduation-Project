@@ -21,14 +21,23 @@ import { UpdateProjectDto } from './dto/update-project.dto';
 export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(userId: string, dto: CreateProjectDto): Promise<Project> {
-    return this.prisma.project.create({
+  async create(userId: string, dto: CreateProjectDto) {
+    const created = await this.prisma.project.create({
       data: {
         name: dto.name,
         description: dto.description,
         userId,
+        campaigns: {
+          create: { name: 'New chat' },
+        },
       },
+      include: { campaigns: true },
     });
+
+    const { campaigns, ...project } = created;
+    const [initialChat] = campaigns;
+
+    return { ...project, initialChat };
   }
 
   async findAll(userId: string, query: QueryProjectsDto) {
