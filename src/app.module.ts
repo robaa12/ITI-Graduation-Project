@@ -10,6 +10,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { BillingModule } from './modules/billing/billing.module';
 import { EmailModule } from './modules/email/email.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
@@ -18,6 +19,7 @@ import { StrategyModule } from './modules/strategy/strategy.module';
 import { ContentWorkflowModule } from './modules/content-workflow/content-workflow.module';
 import { HistoryModule } from './modules/history/history.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
+import { SocialModule } from './modules/social/social.module';
 
 @Module({
   imports: [
@@ -62,6 +64,8 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
     ContentWorkflowModule,
     HistoryModule,
     KnowledgeModule,
+    BillingModule,
+    SocialModule,
   ],
   controllers: [AppController],
   providers: [AppService],

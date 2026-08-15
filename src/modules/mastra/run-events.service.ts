@@ -12,7 +12,7 @@ type PersistedRun = {
 };
 
 type WorkflowProgress = {
-  status: 'running' | 'success' | 'failed' | 'suspended';
+  status: 'running' | 'success' | 'failed' | 'suspended' | 'canceled';
   activeSteps: string[];
   completedSteps: string[];
   error?: string | null;
@@ -23,10 +23,14 @@ function clientStatus(status: string): WorkflowProgress['status'] {
   if (status === 'READY' || status === 'success') return 'success';
   if (status === 'FAILED' || status === 'failed') return 'failed';
   if (status === 'SUSPENDED' || status === 'suspended') return 'suspended';
+  if (status === 'CANCELED' || status === 'canceled') return 'canceled';
   return 'running';
 }
 
-function stepState(value: unknown): { activeSteps: string[]; completedSteps: string[] } {
+function stepState(value: unknown): {
+  activeSteps: string[];
+  completedSteps: string[];
+} {
   if (!value || typeof value !== 'object') {
     return { activeSteps: [], completedSteps: [] };
   }
@@ -90,7 +94,10 @@ export class MastraRunEventsService {
 
           if (record.runId && base.status === 'running') {
             try {
-              const mastraRun = await this.mastra.getRun(workflowId, record.runId);
+              const mastraRun = await this.mastra.getRun(
+                workflowId,
+                record.runId,
+              );
               emit({ ...base, ...stepState(mastraRun) });
             } catch {
               // The durable database status is still useful if Mastra is

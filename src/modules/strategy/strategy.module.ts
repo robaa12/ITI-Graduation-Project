@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { MastraModule } from '../mastra/mastra.module';
+import { WorkflowAccountingModule } from '../workflow-accounting/workflow-accounting.module';
 import {
   CampaignStrategyController,
   StrategyController,
@@ -17,6 +18,7 @@ import { StrategyService } from './strategy.service';
     AuthModule,
     CampaignsModule,
     MastraModule,
+    WorkflowAccountingModule,
     BullModule.registerQueue({ name: STRATEGY_QUEUE }),
   ],
   controllers: [CampaignStrategyController, StrategyController],

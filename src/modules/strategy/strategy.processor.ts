@@ -1,12 +1,17 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { KnowledgeSourceStatus, Prisma, WorkflowRunStatus } from '@prisma/client';
+import {
+  KnowledgeSourceStatus,
+  Prisma,
+  WorkflowRunStatus,
+} from '@prisma/client';
 import { Job } from 'bullmq';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { MastraClient } from '../mastra/mastra.client';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { toErrorMessage, toWorkflowRunStatus } from '../mastra/run-status';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
 
 /**
@@ -21,6 +26,7 @@ export class StrategyProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mastra: MastraClient,
+    private readonly accounting: WorkflowAccountingService,
   ) {
     super();
   }
@@ -30,7 +36,14 @@ export class StrategyProcessor extends WorkerHost {
 
     const strategy = await this.prisma.marketingStrategy.findUnique({
       where: { id: strategyId },
-      include: { campaign: { select: { projectId: true, project: { select: { brandProfile: true } } } } },
+      include: {
+        campaign: {
+          select: {
+            projectId: true,
+            project: { select: { brandProfile: true } },
+          },
+        },
+      },
     });
 
     if (!strategy) {
@@ -46,40 +59,65 @@ export class StrategyProcessor extends WorkerHost {
       return;
     }
 
-    await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
+    const claimed = await this.prisma.marketingStrategy.updateMany({
+      where: { id: strategyId, status: WorkflowRunStatus.PENDING },
       data: { status: WorkflowRunStatus.RUNNING },
     });
+    await this.accounting
+      .markRunning(strategy.runId)
+      .catch((error) =>
+        this.logger.warn(
+          `Could not mark accounting for ${strategy.runId} as running: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+
+    if (claimed.count === 0) {
+      this.logger.log(
+        `Strategy ${strategyId} is no longer pending; dropping queued job`,
+      );
+      return;
+    }
 
     const { resume } = job.data;
 
     const readySources = await this.prisma.knowledgeSource.findMany({
-      where: { projectId: strategy.campaign.projectId, status: KnowledgeSourceStatus.READY },
+      where: {
+        projectId: strategy.campaign.projectId,
+        status: KnowledgeSourceStatus.READY,
+      },
       select: { id: true },
     });
 
+    const workflow =
+      job.data.workflow === 'section-revision'
+        ? MASTRA_WORKFLOWS.strategySectionRevision
+        : MASTRA_WORKFLOWS.strategy;
+
     const result = resume
       ? await this.mastra.resumeRun(
-          MASTRA_WORKFLOWS.strategy,
+          workflow,
           strategy.runId,
           resume.step,
           resume.resumeData,
         )
       : await this.mastra.startRun(
-          MASTRA_WORKFLOWS.strategy,
+          workflow,
           strategy.runId,
-          {
-            ...(strategy.input as Record<string, unknown>),
-            // This value is derived from the owned campaign, never accepted
-            // from a browser, so Mastra retrieval cannot cross project scope.
-            knowledgeScope: {
-              projectId: strategy.campaign.projectId,
-              sourceIds: readySources.map((source) => source.id),
-            },
-            ...(strategy.campaign.project.brandProfile
-              ? { brandProfile: strategy.campaign.project.brandProfile }
-              : {}),
-          },
+          job.data.workflow === 'section-revision'
+            ? strategy.pendingRevision
+            : {
+                ...(strategy.input as Record<string, unknown>),
+                // This value is derived from the owned campaign, never accepted
+                // from a browser, so Mastra retrieval cannot cross project scope.
+                knowledgeScope: {
+                  projectId: strategy.campaign.projectId,
+                  sourceIds: readySources.map((source) => source.id),
+                },
+                ...(strategy.campaign.project.brandProfile
+                  ? { brandProfile: strategy.campaign.project.brandProfile }
+                  : {}),
+              },
+          () => this.isCanceled(strategyId),
         );
 
     const status = toWorkflowRunStatus(result);
@@ -88,13 +126,16 @@ export class StrategyProcessor extends WorkerHost {
     // deleted while it is in flight. `update` throws on a missing row, which
     // would turn a completed run into a spurious job failure.
     const { count } = await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
+      where: { id: strategyId, status: WorkflowRunStatus.RUNNING },
       data: {
         status,
         output:
           status === WorkflowRunStatus.READY
             ? (result.result as Prisma.InputJsonValue)
-            : Prisma.DbNull,
+            : job.data.workflow === 'section-revision'
+              ? (strategy.output ?? Prisma.DbNull)
+              : Prisma.DbNull,
+        pendingRevision: Prisma.DbNull,
         suspendPayload:
           status === WorkflowRunStatus.SUSPENDED
             ? ((result.suspended ??
@@ -108,10 +149,19 @@ export class StrategyProcessor extends WorkerHost {
 
     if (count === 0) {
       this.logger.warn(
-        `Strategy ${strategyId} was deleted while run ${strategy.runId} was in flight; discarding the ${status} result`,
+        `Strategy ${strategyId} was deleted or canceled while run ${strategy.runId} was in flight; discarding the ${status} result`,
       );
       return;
     }
+
+    await this.accounting
+      .markTerminal(strategy.runId, status)
+      .catch((error) =>
+        this.logger.warn(
+          `Could not mark accounting for ${strategy.runId} as ${status}: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    await this.accounting.collectOrSchedule(strategy.runId);
 
     this.logger.log(
       `Strategy ${strategyId} (run ${strategy.runId}) finished as ${status}`,
@@ -142,15 +192,40 @@ export class StrategyProcessor extends WorkerHost {
   }
 
   private async fail(strategyId: string, message: string): Promise<void> {
+    const strategy = await this.prisma.marketingStrategy.findUnique({
+      where: { id: strategyId },
+      select: { runId: true },
+    });
     // updateMany rather than update: the row may have been deleted, and a
     // second throw inside the failure handler would be silently swallowed.
     const { count } = await this.prisma.marketingStrategy.updateMany({
-      where: { id: strategyId },
-      data: { status: WorkflowRunStatus.FAILED, error: message },
+      where: {
+        id: strategyId,
+        status: { in: [WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING] },
+      },
+      data: {
+        status: WorkflowRunStatus.FAILED,
+        pendingRevision: Prisma.DbNull,
+        error: message,
+      },
     });
 
     if (count === 0) {
       this.logger.warn(`Could not mark strategy ${strategyId} as FAILED`);
+      return;
     }
+    if (strategy?.runId) {
+      await this.accounting
+        .markTerminal(strategy.runId, WorkflowRunStatus.FAILED)
+        .catch(() => undefined);
+      await this.accounting.collectOrSchedule(strategy.runId);
+    }
+  }
+
+  private async isCanceled(strategyId: string): Promise<boolean> {
+    const count = await this.prisma.marketingStrategy.count({
+      where: { id: strategyId, status: WorkflowRunStatus.CANCELED },
+    });
+    return count > 0;
   }
 }

@@ -1,10 +1,12 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { KnowledgeService } from './knowledge.service';
 import { AskKnowledgeDto, CreateDocumentSourceDto, CreateSocialSourceDto, CreateWebsiteSourceDto } from './dto/create-knowledge-source.dto';
+import { extractDocumentText, type UploadedDocumentFile } from './document-extractor';
 
 @Controller('projects/:projectId/knowledge')
 @UseGuards(AuthGuard)
@@ -19,6 +21,22 @@ export class KnowledgeController {
 
   @Post('sources/document') @HttpCode(202)
   document(@CurrentUser() user: AuthenticatedUser, @Param('projectId', ParseUUIDPipe) projectId: string, @Body() dto: CreateDocumentSourceDto) { return this.knowledge.addDocument(user.id, projectId, dto); }
+
+  @Post('sources/document-upload') @HttpCode(202)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  async documentUpload(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('projectId', ParseUUIDPipe) projectId: string,
+    @UploadedFile() file: UploadedDocumentFile | undefined,
+  ) {
+    if (!file) throw new BadRequestException('A document file is required');
+    return this.knowledge.addUploadedDocument(
+      user.id,
+      projectId,
+      file,
+      await extractDocumentText(file),
+    );
+  }
 
   @Post('sources/social-posts') @HttpCode(202)
   socialPosts(@CurrentUser() user: AuthenticatedUser, @Param('projectId', ParseUUIDPipe) projectId: string, @Body() dto: CreateSocialSourceDto) { return this.knowledge.addSocialPosts(user.id, projectId, dto); }

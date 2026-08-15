@@ -5,6 +5,7 @@ import {
   MastraRequestError,
   MastraWorkflowId,
   MastraWorkflowResult,
+  MastraWorkflowUsage,
 } from './mastra.types';
 
 /**
@@ -39,6 +40,7 @@ export class MastraClient {
     workflowId: MastraWorkflowId,
     runId: string,
     inputData: unknown,
+    shouldCancel?: () => Promise<boolean>,
   ): Promise<MastraWorkflowResult<TResult>> {
     this.logger.log(`Starting ${workflowId} run ${runId}`);
 
@@ -49,6 +51,15 @@ export class MastraClient {
       'POST',
       `/api/workflows/${workflowId}/create-run?runId=${encodeURIComponent(runId)}`,
     );
+
+    // A cancellation can win the database race just before Mastra creates the
+    // run. Re-check after creation so the new remote run is stopped rather than
+    // slipping through the narrow create/start gap.
+    if (await shouldCancel?.()) {
+      await this.cancelRun(workflowId, runId);
+      return { status: 'canceled' };
+    }
+
     await this.request(
       'POST',
       `/api/workflows/${workflowId}/start?runId=${encodeURIComponent(runId)}`,
@@ -92,6 +103,34 @@ export class MastraClient {
     );
   }
 
+  /** Stops an active or suspended Mastra run. */
+  async cancelRun(workflowId: MastraWorkflowId, runId: string): Promise<void> {
+    this.logger.log(`Canceling ${workflowId} run ${runId}`);
+    await this.request(
+      'POST',
+      `/api/workflows/${workflowId}/runs/${encodeURIComponent(runId)}/cancel`,
+    );
+  }
+
+  async getWorkflowUsage(
+    workflowId: MastraWorkflowId,
+    runId: string,
+    startedAt: Date,
+  ): Promise<MastraWorkflowUsage> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) {
+      throw new MastraRequestError(
+        'MASTRA_INTERNAL_TOKEN is required before workflow usage can be collected',
+      );
+    }
+    return this.request(
+      'GET',
+      `/internal/workflow-usage/${encodeURIComponent(workflowId)}/${encodeURIComponent(runId)}?startedAt=${encodeURIComponent(startedAt.toISOString())}`,
+      undefined,
+      { 'X-Mastra-Internal-Token': token },
+    );
+  }
+
   async indexKnowledgeSource(input: {
     projectId: string;
     sourceId: string;
@@ -99,20 +138,26 @@ export class MastraClient {
     name: string;
     url?: string | null;
     content: string;
-    documents?: Array<{ pageId: string; title: string; url: string; content: string }>;
-  }): Promise<{ chunkCount: number; embeddingModel?: string; indexVersion?: string }> {
+    documents?: Array<{
+      pageId: string;
+      title: string;
+      url: string;
+      content: string;
+    }>;
+  }): Promise<{
+    chunkCount: number;
+    embeddingModel?: string;
+    indexVersion?: string;
+  }> {
     const token = this.config.get<string>('mastra.internalToken');
     if (!token) {
       throw new MastraRequestError(
         'MASTRA_INTERNAL_TOKEN is required before knowledge indexing can run',
       );
     }
-    return this.request(
-      'POST',
-      '/internal/knowledge/index',
-      input,
-      { 'X-Mastra-Internal-Token': token },
-    );
+    return this.request('POST', '/internal/knowledge/index', input, {
+      'X-Mastra-Internal-Token': token,
+    });
   }
 
   async deleteKnowledgeSource(sourceId: string): Promise<void> {
@@ -126,14 +171,60 @@ export class MastraClient {
     );
   }
 
-  async queryProjectKnowledge(projectId: string, sourceIds: string[], query: string): Promise<{ answer: string; citations: Array<{
-    sourceId: string; pageId?: string; chunkId?: string; sourceType: string; title: string; url?: string; excerpt: string; score: number;
-  }> }> {
+  async queryProjectKnowledge(
+    projectId: string,
+    sourceIds: string[],
+    query: string,
+  ): Promise<{
+    answer: string;
+    citations: Array<{
+      sourceId: string;
+      pageId?: string;
+      chunkId?: string;
+      sourceType: string;
+      title: string;
+      url?: string;
+      excerpt: string;
+      score: number;
+    }>;
+  }> {
     const token = this.config.get<string>('mastra.internalToken');
-    if (!token) throw new MastraRequestError('MASTRA_INTERNAL_TOKEN is required before knowledge retrieval can run');
-    return this.request<{ answer: string; citations: Array<{
-      sourceId: string; pageId?: string; chunkId?: string; sourceType: string; title: string; url?: string; excerpt: string; score: number;
-    }> }>('POST', '/internal/knowledge/query', { projectId, sourceIds, query }, { 'X-Mastra-Internal-Token': token });
+    if (!token)
+      throw new MastraRequestError(
+        'MASTRA_INTERNAL_TOKEN is required before knowledge retrieval can run',
+      );
+    return this.request<{
+      answer: string;
+      citations: Array<{
+        sourceId: string;
+        pageId?: string;
+        chunkId?: string;
+        sourceType: string;
+        title: string;
+        url?: string;
+        excerpt: string;
+        score: number;
+      }>;
+    }>(
+      'POST',
+      '/internal/knowledge/query',
+      { projectId, sourceIds, query },
+      { 'X-Mastra-Internal-Token': token },
+    );
+  }
+
+  /** Generates one asset for the backwards-compatible per-item content queue. */
+  async generateContentItem(input: unknown): Promise<unknown> {
+    const token = this.config.get<string>('mastra.internalToken');
+    if (!token) {
+      throw new MastraRequestError(
+        'MASTRA_INTERNAL_TOKEN is required before content generation can run',
+      );
+    }
+
+    return this.request('POST', '/internal/content/generate', input, {
+      'X-Mastra-Internal-Token': token,
+    });
   }
 
   private async waitForRun<TResult>(
@@ -154,7 +245,8 @@ export class MastraClient {
       if (
         state.status === 'success' ||
         state.status === 'failed' ||
-        state.status === 'suspended'
+        state.status === 'suspended' ||
+        state.status === 'canceled'
       ) {
         return {
           status: state.status,
@@ -187,7 +279,10 @@ export class MastraClient {
         method,
         headers:
           body || extraHeaders
-            ? { ...(body ? { 'Content-Type': 'application/json' } : {}), ...extraHeaders }
+            ? {
+                ...(body ? { 'Content-Type': 'application/json' } : {}),
+                ...extraHeaders,
+              }
             : undefined,
         body: body === undefined ? undefined : JSON.stringify(body),
         // A workflow chains six or seven agents, so the ceiling is minutes, not

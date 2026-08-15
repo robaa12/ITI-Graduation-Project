@@ -225,4 +225,10 @@ export class WorkflowEngine {
     if (!run || run.workflowId !== workflowId) throw new Error(`Run not found: ${runId}`)
     return run
   }
+
+  cancelRun(workflowId, runId) {
+    const run = this.getRun(workflowId, runId)
+    run.status = 'canceled'
+    return { message: 'Workflow run canceled' }
+  }
 }

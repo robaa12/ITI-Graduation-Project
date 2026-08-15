@@ -9,14 +9,26 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { MarketingStrategy, Prisma, WorkflowRunStatus } from '@prisma/client';
+import {
+  MarketingStrategy,
+  Prisma,
+  StrategyApprovalStatus,
+  WorkflowAccountingStatus,
+  WorkflowExecutionKind,
+  WorkflowRunStatus,
+} from '@prisma/client';
 import { Queue } from 'bullmq';
 
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { MastraClient } from '../mastra/mastra.client';
+import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { parseResumeRequest } from '../mastra/resume-request';
+import { presentWorkflowAccounting } from '../workflow-accounting/workflow-accounting.presenter';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
+import { ReviewStrategyDto } from './dto/review-strategy.dto';
+import { RegenerateStrategySectionDto } from './dto/regenerate-strategy-section.dto';
 import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
 
 /**
@@ -25,7 +37,11 @@ import { STRATEGY_QUEUE, StrategyJob } from './strategy.queue';
  * This cap is the single thing enforced here — without it an unbounded blob
  * would be persisted and shipped over the wire to Mastra.
  */
-const MAX_INPUT_BYTES = 64 * 1024;
+const MAX_WORKFLOW_INPUT_BYTES = 64 * 1024;
+// Completed strategies contain all upstream artefacts as well as the campaign
+// plan, so they are substantially larger than the initial brief. Leave room
+// below the 256 KiB HTTP body limit for the action, note, and JSON wrapper.
+const MAX_REVIEW_OUTPUT_BYTES = 240 * 1024;
 
 @Injectable()
 export class StrategyService {
@@ -36,6 +52,7 @@ export class StrategyService {
     private readonly campaignsService: CampaignsService,
     @InjectQueue(STRATEGY_QUEUE)
     private readonly queue: Queue<StrategyJob>,
+    private readonly mastra: MastraClient,
   ) {}
 
   /**
@@ -57,21 +74,33 @@ export class StrategyService {
       throw new BadRequestException('Request body must be a JSON object');
     }
 
-    if (jsonByteLength(input) > MAX_INPUT_BYTES) {
+    if (jsonByteLength(input) > MAX_WORKFLOW_INPUT_BYTES) {
       throw new BadRequestException(
-        `Workflow input must serialise to at most ${MAX_INPUT_BYTES} bytes`,
+        `Workflow input must serialise to at most ${MAX_WORKFLOW_INPUT_BYTES} bytes`,
       );
     }
 
     // Written before the worker contacts Mastra so any startup failure is
     // recorded against a row the client can actually inspect.
-    const record = await this.prisma.marketingStrategy.create({
-      data: {
-        campaignId,
-        runId: randomUUID(),
-        input: input as Prisma.InputJsonValue,
-        status: WorkflowRunStatus.PENDING,
-      },
+    const runId = randomUUID();
+    const record = await this.prisma.$transaction(async (tx) => {
+      const strategy = await tx.marketingStrategy.create({
+        data: {
+          campaignId,
+          runId,
+          input: input as Prisma.InputJsonValue,
+          status: WorkflowRunStatus.PENDING,
+        },
+      });
+      await tx.workflowExecution.create({
+        data: {
+          mastraRunId: runId,
+          workflowId: MASTRA_WORKFLOWS.strategy,
+          kind: WorkflowExecutionKind.STRATEGY,
+          strategyId: strategy.id,
+        },
+      });
+      return strategy;
     });
 
     try {
@@ -97,10 +126,16 @@ export class StrategyService {
         where: { id: record.id },
         data: { status: WorkflowRunStatus.FAILED, error: message },
       });
+      await this.prisma.workflowExecution.updateMany({
+        where: { mastraRunId: runId },
+        data: {
+          status: WorkflowRunStatus.FAILED,
+          accountingStatus: WorkflowAccountingStatus.UNAVAILABLE,
+          finishedAt: new Date(),
+        },
+      });
 
-      this.logger.error(
-        `Could not enqueue strategy ${record.id}: ${message}`,
-      );
+      this.logger.error(`Could not enqueue strategy ${record.id}: ${message}`);
       throw new ServiceUnavailableException(
         'The workflow queue is unavailable, please retry',
       );
@@ -127,14 +162,27 @@ export class StrategyService {
     if (!strategy.runId) {
       throw new ConflictException(`Strategy ${id} has no Mastra run to resume`);
     }
+    const mastraRunId = strategy.runId;
 
-    const { count } = await this.prisma.marketingStrategy.updateMany({
-      where: { id, status: WorkflowRunStatus.SUSPENDED },
-      data: {
-        status: WorkflowRunStatus.PENDING,
-        suspendPayload: Prisma.DbNull,
-        error: null,
-      },
+    const count = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.marketingStrategy.updateMany({
+        where: { id, status: WorkflowRunStatus.SUSPENDED },
+        data: {
+          status: WorkflowRunStatus.PENDING,
+          suspendPayload: Prisma.DbNull,
+          error: null,
+        },
+      });
+      if (claimed.count > 0) {
+        await tx.workflowExecution.updateMany({
+          where: { mastraRunId },
+          data: {
+            accountingStatus: WorkflowAccountingStatus.PENDING,
+            usageCollectedAt: null,
+          },
+        });
+      }
+      return claimed.count;
     });
 
     if (count === 0) {
@@ -166,6 +214,10 @@ export class StrategyService {
           status: WorkflowRunStatus.SUSPENDED,
           suspendPayload: strategy.suspendPayload ?? Prisma.DbNull,
         },
+      });
+      await this.prisma.workflowExecution.updateMany({
+        where: { mastraRunId },
+        data: { accountingStatus: WorkflowAccountingStatus.UNAVAILABLE },
       });
       throw error;
     }
@@ -202,7 +254,245 @@ export class StrategyService {
     };
   }
 
-  async findOne(userId: string, id: string): Promise<MarketingStrategy> {
+  async findOne(userId: string, id: string) {
+    const strategy = await this.findOwnedOrFail(userId, id);
+    const executions = await this.prisma.workflowExecution.findMany({
+      where: { strategyId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+    return { ...strategy, ...presentWorkflowAccounting(executions) };
+  }
+
+  /**
+   * Persists a human review and, on approval, the exact edited draft that will
+   * be handed to the content workflow. This closes the former browser-only
+   * approval gap where changes could disappear on refresh.
+   */
+  async review(
+    user: { id: string; name: string },
+    id: string,
+    dto: ReviewStrategyDto,
+  ): Promise<MarketingStrategy> {
+    const strategy = await this.findOwnedOrFail(user.id, id);
+
+    if (strategy.status !== WorkflowRunStatus.READY) {
+      throw new ConflictException(
+        `Strategy ${id} is ${strategy.status}; only a READY strategy can be reviewed`,
+      );
+    }
+
+    if (dto.action === StrategyApprovalStatus.APPROVED && !dto.output) {
+      throw new BadRequestException(
+        'An edited strategy output is required for approval',
+      );
+    }
+
+    if (dto.output && jsonByteLength(dto.output) > MAX_REVIEW_OUTPUT_BYTES) {
+      throw new BadRequestException(
+        `Reviewed strategy must serialise to at most ${MAX_REVIEW_OUTPUT_BYTES} bytes`,
+      );
+    }
+
+    const output = dto.output
+      ? (dto.output as Prisma.InputJsonValue)
+      : undefined;
+    const reviewedAt = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.marketingStrategy.update({
+        where: { id },
+        data: {
+          approvalStatus: dto.action,
+          reviewedAt,
+          reviewerId: user.id,
+          reviewerName: user.name,
+          reviewNote: dto.note?.trim() || null,
+          ...(output ? { output } : {}),
+        },
+      });
+
+      await tx.strategyReviewEvent.create({
+        data: {
+          strategyId: id,
+          action: dto.action,
+          note: dto.note?.trim() || null,
+          reviewerId: user.id,
+          reviewerName: user.name,
+          ...(output ? { output } : {}),
+        },
+      });
+
+      return updated;
+    });
+  }
+
+  async listReviews(userId: string, id: string) {
+    await this.findOwnedOrFail(userId, id);
+    return this.prisma.strategyReviewEvent.findMany({
+      where: { strategyId: id },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        action: true,
+        note: true,
+        reviewerName: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  /** Queues a focused revision while keeping this strategy id as the durable record. */
+  async regenerateSection(
+    user: { id: string; name: string },
+    id: string,
+    dto: RegenerateStrategySectionDto,
+  ): Promise<MarketingStrategy> {
+    const strategy = await this.findOwnedOrFail(user.id, id);
+    if (
+      (strategy.status !== WorkflowRunStatus.READY &&
+        strategy.status !== WorkflowRunStatus.FAILED) ||
+      !strategy.output
+    ) {
+      throw new ConflictException(
+        `Strategy ${id} must be READY before a section can be regenerated`,
+      );
+    }
+
+    const revisionInput = {
+      strategy: strategy.output,
+      section: dto.section,
+      feedback: dto.feedback.trim(),
+    };
+
+    const revisionRunId = randomUUID();
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.marketingStrategy.updateMany({
+        where: {
+          id,
+          status: { in: [WorkflowRunStatus.READY, WorkflowRunStatus.FAILED] },
+        },
+        data: {
+          pendingRevision: revisionInput,
+          runId: revisionRunId,
+          status: WorkflowRunStatus.PENDING,
+          approvalStatus: StrategyApprovalStatus.PENDING_REVIEW,
+          reviewedAt: null,
+          reviewerId: null,
+          reviewerName: null,
+          reviewNote: null,
+          error: null,
+        },
+      });
+      if (count === 0) {
+        throw new ConflictException(`Strategy ${id} is already being updated`);
+      }
+      await tx.workflowExecution.create({
+        data: {
+          mastraRunId: revisionRunId,
+          workflowId: MASTRA_WORKFLOWS.strategySectionRevision,
+          kind: WorkflowExecutionKind.STRATEGY_SECTION_REVISION,
+          strategyId: id,
+        },
+      });
+      await tx.strategyReviewEvent.create({
+        data: {
+          strategyId: id,
+          action: StrategyApprovalStatus.CHANGES_REQUESTED,
+          note: `Regenerate ${dto.section}: ${dto.feedback.trim()}`,
+          reviewerId: user.id,
+          reviewerName: user.name,
+          output: strategy.output as Prisma.InputJsonValue,
+        },
+      });
+    });
+
+    try {
+      await this.queue.add(
+        'section-revision',
+        { strategyId: id, workflow: 'section-revision' },
+        {
+          jobId: `strategy-${id}-section-${randomUUID()}`,
+          attempts: 1,
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      );
+    } catch (error) {
+      await this.prisma.marketingStrategy.updateMany({
+        where: { id, status: WorkflowRunStatus.PENDING },
+        data: {
+          status: WorkflowRunStatus.READY,
+          pendingRevision: Prisma.DbNull,
+          runId: strategy.runId,
+        },
+      });
+      await this.prisma.workflowExecution.updateMany({
+        where: { mastraRunId: revisionRunId },
+        data: {
+          status: WorkflowRunStatus.FAILED,
+          accountingStatus: WorkflowAccountingStatus.UNAVAILABLE,
+          finishedAt: new Date(),
+        },
+      });
+      throw error;
+    }
+
+    return this.findOwnedOrFail(user.id, id);
+  }
+
+  /**
+   * Claims cancellation in Postgres before asking Mastra to stop. Workers only
+   * write results while a row is RUNNING, so a late completion cannot bring a
+   * canceled run back to life.
+   */
+  async cancel(userId: string, id: string): Promise<MarketingStrategy> {
+    const strategy = await this.findOwnedOrFail(userId, id);
+
+    if (strategy.status === WorkflowRunStatus.CANCELED) {
+      return strategy;
+    }
+
+    const cancellable: WorkflowRunStatus[] = [
+      WorkflowRunStatus.PENDING,
+      WorkflowRunStatus.RUNNING,
+      WorkflowRunStatus.SUSPENDED,
+    ];
+    if (!cancellable.includes(strategy.status)) {
+      throw new ConflictException(
+        `Strategy ${id} is ${strategy.status}; only an active run can be canceled`,
+      );
+    }
+
+    const { count } = await this.prisma.marketingStrategy.updateMany({
+      where: { id, status: { in: cancellable } },
+      data: {
+        status: WorkflowRunStatus.CANCELED,
+        error: null,
+        suspendPayload: Prisma.DbNull,
+      },
+    });
+
+    if (count === 0) {
+      const current = await this.findOwnedOrFail(userId, id);
+      if (current.status === WorkflowRunStatus.CANCELED) return current;
+      throw new ConflictException(
+        `Strategy ${id} finished before it could be canceled`,
+      );
+    }
+
+    if (strategy.runId && strategy.status !== WorkflowRunStatus.PENDING) {
+      try {
+        await this.mastra.cancelRun(MASTRA_WORKFLOWS.strategy, strategy.runId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // The durable CANCELED claim still prevents the worker from publishing
+        // a result. This is especially important when Mastra is restarting.
+        this.logger.warn(
+          `Strategy ${id} was canceled locally but Mastra run ${strategy.runId} could not be stopped immediately: ${message}`,
+        );
+      }
+    }
+
     return this.findOwnedOrFail(userId, id);
   }
 

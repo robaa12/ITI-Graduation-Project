@@ -17,6 +17,8 @@ export function toWorkflowRunStatus(
       return WorkflowRunStatus.READY;
     case 'suspended':
       return WorkflowRunStatus.SUSPENDED;
+    case 'canceled':
+      return WorkflowRunStatus.CANCELED;
     case 'failed':
     default:
       return WorkflowRunStatus.FAILED;

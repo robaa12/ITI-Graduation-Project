@@ -22,7 +22,7 @@ async function readJson(request) {
 }
 
 function route(url) {
-  return url.pathname.match(/^\/api\/workflows\/(marketingStrategyWorkflow|contentCreationWorkflow)\/(create-run|start|resume|runs\/[^/]+)$/)
+  return url.pathname.match(/^\/api\/workflows\/(marketingStrategyWorkflow|contentCreationWorkflow)\/(create-run|start|resume|runs\/[^/]+(?:\/cancel)?)$/)
 }
 
 const server = http.createServer(async (request, response) => {
@@ -36,7 +36,8 @@ const server = http.createServer(async (request, response) => {
   if (!['GET', 'POST'].includes(request.method ?? '')) return send(response, 405, { message: 'Method not allowed' })
 
   const [, workflowId, action] = match
-  const runId = action.startsWith('runs/') ? decodeURIComponent(action.slice(5)) : url.searchParams.get('runId')
+  const runPath = action.match(/^runs\/([^/]+)(?:\/cancel)?$/)
+  const runId = runPath ? decodeURIComponent(runPath[1]) : url.searchParams.get('runId')
   try {
     if (request.method === 'POST' && action === 'create-run') {
       const run = engine.createRun(workflowId, runId)
@@ -53,6 +54,9 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && action.startsWith('runs/')) {
       return send(response, 200, engine.getRun(workflowId, runId))
+    }
+    if (request.method === 'POST' && action.endsWith('/cancel')) {
+      return send(response, 200, engine.cancelRun(workflowId, runId))
     }
     return send(response, 405, { message: 'Method not allowed' })
   } catch (error) {

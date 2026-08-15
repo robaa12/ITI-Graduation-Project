@@ -8,16 +8,19 @@ datasource db {
 }
 
 model User {
-  id            String    @id
-  name          String
-  email         String
-  emailVerified Boolean   @default(false)
-  image         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  sessions      Session[]
-  accounts      Account[]
-  projects      Project[]
+  id                String             @id
+  name              String
+  email             String
+  emailVerified     Boolean            @default(false)
+  image             String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  sessions          Session[]
+  accounts          Account[]
+  projects          Project[]
+  socialConnections SocialConnection[]
+  metaOAuthStates   MetaOAuthState[]
+  subscription      Subscription?
 
   @@unique([email])
   @@map("user")
@@ -71,6 +74,93 @@ model Verification {
   @@map("verification")
 }
 
+/// Application-level representation of a purchasable SaaS plan. The Stripe
+/// Product/Price mapping lives here so adding a plan never requires touching
+/// application code or hardcoding Stripe IDs.
+model Plan {
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  name                 String
+  description          String?
+  sortOrder            Int      @default(0)
+  active               Boolean  @default(true)
+  stripeProductId      String
+  stripeMonthlyPriceId String?
+  stripeYearlyPriceId  String?
+  // Display prices in cents (minor units) for the frontend pricing section.
+  // They mirror the Stripe Prices and are the source of truth for billing.
+  priceMonthlyCents    Int?
+  priceYearlyCents     Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@index([active])
+  @@map("plan")
+}
+
+/// Live state of one user's Stripe subscription. Mirrors Stripe's subscription
+/// status so the application can gate access without querying Stripe. Only
+/// identifiers are stored — never card numbers or raw payment credentials.
+model Subscription {
+  id                   String              @id @default(uuid())
+  userId               String              @unique
+  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId               String?
+  plan                 Plan?               @relation(fields: [planId], references: [id])
+  status               SubscriptionStatus  @default(INCOMPLETE)
+  billingInterval      BillingInterval?
+  stripeCustomerId     String?             @unique
+  stripeSubscriptionId String?             @unique
+  stripePriceId        String?
+  checkoutSessionId    String?             @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean             @default(false)
+  canceledAt           DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  events               SubscriptionEvent[]
+
+  @@index([status])
+  @@index([stripeSubscriptionId])
+  @@map("subscription")
+}
+
+/// Idempotency + audit trail for Stripe webhook events. `stripeEventId` unique
+/// guards against duplicate deliveries; the JSON payload preserves the raw
+/// event for debugging without relying on Stripe's retry window.
+model SubscriptionEvent {
+  id             String        @id @default(uuid())
+  stripeEventId  String        @unique
+  type           String
+  payload        Json
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  processedAt    DateTime      @default(now())
+
+  @@index([subscriptionId])
+  @@index([type])
+  @@map("subscription_event")
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  UNPAID
+  CANCELLED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
 enum ProjectStatus {
   ACTIVE
   ARCHIVED
@@ -101,8 +191,30 @@ enum WorkflowRunStatus {
   PENDING
   RUNNING
   SUSPENDED
+  CANCELED
   READY
   FAILED
+}
+
+enum WorkflowExecutionKind {
+  STRATEGY
+  STRATEGY_SECTION_REVISION
+  CONTENT
+}
+
+enum WorkflowAccountingStatus {
+  PENDING
+  READY
+  UNPRICED
+  UNAVAILABLE
+}
+
+/// A completed strategy is not eligible for content generation until a human
+/// reviewer has explicitly approved the exact stored version.
+enum StrategyApprovalStatus {
+  PENDING_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
 }
 
 enum KnowledgeSourceType {
@@ -119,19 +231,44 @@ enum KnowledgeSourceStatus {
   FAILED
 }
 
+enum SocialConnectionProvider {
+  META
+}
+
+enum SocialConnectionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+}
+
+enum SocialPublicationStatus {
+  QUEUED
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
 model Project {
-  id          String        @id @default(uuid())
-  name        String
-  description String?
-  status      ProjectStatus @default(ACTIVE)
-  archivedAt  DateTime?
-  userId      String
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  campaigns   Campaign[]
+  id               String            @id @default(uuid())
+  name             String
+  description      String?
+  status           ProjectStatus     @default(ACTIVE)
+  archivedAt       DateTime?
+  userId           String
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaigns        Campaign[]
   knowledgeSources KnowledgeSource[]
-  brandProfile Json?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  brandProfile     Json?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   @@index([userId])
   @@index([userId, status])
@@ -153,7 +290,7 @@ model KnowledgeSource {
   indexedAt DateTime?
 
   projectId String
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project   Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   pages     KnowledgePage[]
 
   createdAt DateTime @default(now())
@@ -168,13 +305,13 @@ model KnowledgeSource {
 /// this normalized lets retrieval cite the actual FAQ/product/about page that
 /// supports a generated claim instead of only the submitted homepage.
 model KnowledgePage {
-  id        String   @id @default(uuid())
-  url       String
-  title     String
-  content   String   @db.Text
+  id          String   @id @default(uuid())
+  url         String
+  title       String
+  content     String   @db.Text
   contentHash String
-  error     String?
-  crawledAt DateTime @default(now())
+  error       String?
+  crawledAt   DateTime @default(now())
 
   sourceId String
   source   KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
@@ -237,7 +374,19 @@ model MarketingStrategy {
   /// for. Null in every other state.
   suspendPayload Json?
 
+  /// One-off input for a focused section revision. Kept separate from the
+  /// original workflow input so the complete strategy remains replayable.
+  pendingRevision Json?
+
   error String?
+
+  approvalStatus StrategyApprovalStatus @default(PENDING_REVIEW)
+  reviewedAt     DateTime?
+  reviewerId     String?
+  reviewerName   String?
+  reviewNote     String?
+  reviewEvents   StrategyReviewEvent[]
+  executions     WorkflowExecution[]
 
   campaignId  String
   campaign    Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -249,6 +398,26 @@ model MarketingStrategy {
   @@index([campaignId])
   @@index([campaignId, status])
   @@map("marketing_strategy")
+}
+
+/// Immutable audit trail for the review decision. Reviewer identity is stored
+/// as a snapshot so a historical decision remains understandable even if the
+/// user later changes their profile details.
+model StrategyReviewEvent {
+  id           String                 @id @default(uuid())
+  action       StrategyApprovalStatus
+  note         String?
+  reviewerId   String
+  reviewerName String
+  output       Json?
+
+  strategyId String
+  strategy   MarketingStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([strategyId, createdAt])
+  @@map("strategy_review_event")
 }
 
 /// One run of the Mastra `contentCreationWorkflow`. Holds the raw workflow
@@ -267,8 +436,9 @@ model CampaignContentRun {
   error          String?
 
   /// Number of GeneratedContent rows fanned out from `output.calendar`.
-  contentCount Int                @default(0)
+  contentCount Int                 @default(0)
   contents     GeneratedContent[]
+  executions   WorkflowExecution[]
 
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -285,6 +455,42 @@ model CampaignContentRun {
   @@index([campaignId, status])
   @@index([strategyId])
   @@map("campaign_content_run")
+}
+
+/// Immutable accounting record for one concrete Mastra run. Strategy section
+/// revisions get their own row even though they update the same strategy.
+model WorkflowExecution {
+  id          String                @id @default(uuid())
+  mastraRunId String                @unique
+  workflowId  String
+  kind        WorkflowExecutionKind
+  status      WorkflowRunStatus     @default(PENDING)
+
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+  totalTokens  Int @default(0)
+
+  estimatedCost    Decimal?                 @db.Decimal(20, 10)
+  costUnit         String?
+  accountingStatus WorkflowAccountingStatus @default(PENDING)
+  modelBreakdown   Json?
+  usageCollectedAt DateTime?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+
+  strategyId String?
+  strategy   MarketingStrategy? @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  contentRunId String?
+  contentRun   CampaignContentRun? @relation(fields: [contentRunId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([strategyId, createdAt])
+  @@index([contentRunId, createdAt])
+  @@index([accountingStatus])
+  @@map("workflow_execution")
 }
 
 model GeneratedContent {
@@ -318,6 +524,7 @@ model GeneratedContent {
   /// deleting a run leaves the content it produced in place.
   contentRunId String?
   contentRun   CampaignContentRun? @relation(fields: [contentRunId], references: [id], onDelete: SetNull)
+  publications SocialPublication[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -326,4 +533,104 @@ model GeneratedContent {
   @@index([campaignId, type])
   @@index([contentRunId])
   @@map("generated_content")
+}
+
+/// One OAuth grant for a provider. Tokens are AES-GCM ciphertext and are never
+/// returned through the HTTP API.
+model SocialConnection {
+  id       String                   @id @default(uuid())
+  provider SocialConnectionProvider
+  status   SocialConnectionStatus   @default(ACTIVE)
+
+  externalUserId        String?
+  accessTokenCiphertext String
+  accessTokenExpiresAt  DateTime?
+  grantedScopes         String[]  @default([])
+  lastSyncedAt          DateTime?
+  lastError             String?
+
+  userId   String
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts SocialAccount[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId, status])
+  @@map("social_connection")
+}
+
+/// A Facebook Page or linked Instagram professional account discovered from a
+/// Meta connection. Page tokens are encrypted independently so publishing does
+/// not need to expose or reuse the user token.
+model SocialAccount {
+  id         String         @id @default(uuid())
+  platform   SocialPlatform
+  externalId String
+  name       String
+  username   String?
+  imageUrl   String?
+  tasks      String[]       @default([])
+
+  accessTokenCiphertext String
+  selected              Boolean @default(false)
+  available             Boolean @default(true)
+
+  connectionId String
+  connection   SocialConnection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  publications SocialPublication[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([connectionId, platform, externalId])
+  @@index([connectionId, selected])
+  @@map("social_account")
+}
+
+/// One-time OAuth state. Only a SHA-256 hash is persisted, so a database read
+/// cannot recover a state value that is still usable at the callback.
+model MetaOAuthState {
+  id        String   @id @default(uuid())
+  stateHash String   @unique
+  expiresAt DateTime
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("meta_oauth_state")
+}
+
+/// Durable scheduling and provider-delivery record. A revision invalidates a
+/// delayed job when the publication is cancelled or retried.
+model SocialPublication {
+  id                String                  @id @default(uuid())
+  status            SocialPublicationStatus @default(QUEUED)
+  scheduledFor      DateTime
+  caption           String
+  mediaUrl          String?
+  platform          SocialPlatform
+  accountName       String
+  externalAccountId String
+  publishedAt       DateTime?
+  externalPostId    String?
+  error             String?
+  revision          Int                     @default(1)
+
+  contentId String
+  content   GeneratedContent @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  socialAccountId String?
+  socialAccount   SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contentId])
+  @@index([socialAccountId, status])
+  @@index([status, scheduledFor])
+  @@map("social_publication")
 }

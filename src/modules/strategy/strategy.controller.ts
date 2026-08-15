@@ -16,6 +16,8 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { QueryStrategyDto } from './dto/query-strategy.dto';
+import { ReviewStrategyDto } from './dto/review-strategy.dto';
+import { RegenerateStrategySectionDto } from './dto/regenerate-strategy-section.dto';
 import { MastraRunEventsService } from '../mastra/run-events.service';
 import { MASTRA_WORKFLOWS } from '../mastra/mastra.types';
 import { StrategyService } from './strategy.service';
@@ -74,6 +76,16 @@ export class StrategyController {
     );
   }
 
+  @Sse(':id/section-events')
+  eventsForSectionRevision(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Observable<{ data: unknown }> {
+    return this.events.stream(MASTRA_WORKFLOWS.strategySectionRevision, () =>
+      this.strategyService.findOwnedOrFail(user.id, id),
+    );
+  }
+
   /** Poll target: returns the row, including `output` once it is READY. */
   @Get(':id')
   findOne(
@@ -81,6 +93,35 @@ export class StrategyController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.strategyService.findOne(user.id, id);
+  }
+
+  /** Stops a queued, running, or suspended strategy run. */
+  @Post(':id/cancel')
+  @HttpCode(200)
+  cancel(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.strategyService.cancel(user.id, id);
+  }
+
+  /** Records a human approval decision and, when supplied, the edited plan. */
+  @Post(':id/review')
+  review(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReviewStrategyDto,
+  ) {
+    return this.strategyService.review(user, id, dto);
+  }
+
+  /** Returns the immutable review trail, newest decision first. */
+  @Get(':id/reviews')
+  reviews(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.strategyService.listReviews(user.id, id);
   }
 
   /**
@@ -98,5 +139,15 @@ export class StrategyController {
     @Body() body: Record<string, unknown>,
   ) {
     return this.strategyService.resume(user.id, id, body);
+  }
+
+  @Post(':id/sections/regenerate')
+  @HttpCode(202)
+  regenerateSection(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RegenerateStrategySectionDto,
+  ) {
+    return this.strategyService.regenerateSection(user, id, dto);
   }
 }
