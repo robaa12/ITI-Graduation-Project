@@ -298,9 +298,7 @@ export class CampaignsService {
       .replace(/[^\p{L}\p{N}'’-]+/gu, ' ')
       .trim()
       .split(/\s+/u)
-      .filter(
-        (word) => word && !fillerWords.has(word.toLocaleLowerCase()),
-      );
+      .filter((word) => word && !fillerWords.has(word.toLocaleLowerCase()));
     const words: string[] = [];
 
     for (const word of [
