@@ -40,15 +40,20 @@ export class AuthService {
       return null;
     }
 
-    const prismaUser = await this.prismaService.user.findUnique({
+    // Fetch the user from the database to include the 'role' field
+    const dbUser = await this.prismaService.user.findUnique({
       where: { id: session.user.id },
-      select: { role: true },
+      select: { id: true, role: true },
     });
 
     return {
       user: {
-        ...session.user,
-        role: (prismaUser?.role as UserRole) ?? UserRole.USER,
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.name,
+        emailVerified: session.user.emailVerified,
+        image: session.user.image,
+        role: dbUser?.role || 'user',
       },
     };
   }
