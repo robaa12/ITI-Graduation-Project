@@ -10,9 +10,9 @@ import {
 
 import { AdminGuard } from '../../admin/admin.guard';
 import { AdminUsersService } from './admin-users.service';
-import { QueryUsersDto } from './dto/query-users.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { ChangeUserRoleDto } from './dto/change-user-role.dto';
+import type { QueryUsersDto } from './dto/query-users.dto';
+import type { UpdateUserDto } from './dto/update-user.dto';
+import type { ChangeUserRoleDto } from './dto/change-user-role.dto';
 
 import { CurrentUser } from '../../auth/current-user.decorator';
 
