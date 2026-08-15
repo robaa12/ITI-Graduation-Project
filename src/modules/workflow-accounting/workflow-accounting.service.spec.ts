@@ -177,9 +177,5 @@ function createService({
   mastra: unknown;
   queue?: unknown;
 }) {
-  return new WorkflowAccountingService(
-    prisma as never,
-    mastra as never,
-    queue as never,
-  );
+  return new WorkflowAccountingService(prisma as never, mastra as never, queue);
 }

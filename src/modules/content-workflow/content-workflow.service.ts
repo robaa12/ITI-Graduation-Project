@@ -109,7 +109,7 @@ export class ContentWorkflowService {
           campaignId,
           strategyId,
           runId,
-          input: input as Prisma.InputJsonValue,
+          input: input,
           status: WorkflowRunStatus.PENDING,
         },
       });
