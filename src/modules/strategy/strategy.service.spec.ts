@@ -20,7 +20,7 @@ describe('StrategyService cancellation', () => {
   const service = new StrategyService(
     prisma as never,
     {} as never,
-    {} as never,
+    {},
     mastra as never,
     generationCredits as never,
     {} as never,

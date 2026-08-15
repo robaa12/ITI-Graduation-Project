@@ -107,7 +107,7 @@ export class StrategyService {
         data: {
           campaignId,
           runId,
-          input: authoritativeInput as Prisma.InputJsonValue,
+          input: authoritativeInput,
           status: WorkflowRunStatus.PENDING,
         },
       });
