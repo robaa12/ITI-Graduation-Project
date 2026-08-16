@@ -16,6 +16,7 @@ import { toErrorMessage, toWorkflowRunStatus } from '../mastra/run-status';
 import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { toGeneratedContentRows } from './calendar-fanout';
 import { contentWorkflowCreditReference } from './content-workflow.service';
+import { ProductAssetsService } from '../product-assets/product-assets.service';
 import {
   CONTENT_WORKFLOW_QUEUE,
   ContentWorkflowJob,
@@ -30,6 +31,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
     private readonly mastra: MastraClient,
     private readonly accounting: WorkflowAccountingService,
     private readonly generationCredits: GenerationCreditsService,
+    private readonly productAssets: ProductAssetsService,
   ) {
     super();
   }
@@ -100,6 +102,13 @@ export class ContentWorkflowProcessor extends WorkerHost {
       },
     });
 
+    const productAssetIds = Array.isArray((run.input as Record<string, unknown>).productAssetIds)
+      ? (run.input as Record<string, unknown>).productAssetIds as string[]
+      : [];
+    const productImages = productAssetIds.length > 0
+      ? await this.productAssets.resolveForWorkflow(run.campaign.projectId, productAssetIds)
+      : [];
+
     const result = resume
       ? await this.mastra.resumeRun(
           MASTRA_WORKFLOWS.content,
@@ -116,6 +125,7 @@ export class ContentWorkflowProcessor extends WorkerHost {
               run.campaign.projectId,
               readySources,
             ),
+            productImages,
             ...(run.campaign.project.brandProfile
               ? { brandProfile: run.campaign.project.brandProfile }
               : {}),

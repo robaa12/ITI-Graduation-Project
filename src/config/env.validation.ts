@@ -20,6 +20,12 @@ export const validationSchema = Joi.object({
   MASTRA_BASE_URL: Joi.string().uri().required(),
   MASTRA_TIMEOUT_MS: Joi.number().default(900000),
   RAG_ENABLED: Joi.boolean().default(false),
+  PRODUCT_ASSETS_S3_ENDPOINT: Joi.string().uri().optional(),
+  PRODUCT_ASSETS_S3_REGION: Joi.string().default('us-east-1'),
+  PRODUCT_ASSETS_S3_BUCKET: Joi.string().optional(),
+  PRODUCT_ASSETS_S3_ACCESS_KEY_ID: Joi.string().optional(),
+  PRODUCT_ASSETS_S3_SECRET_ACCESS_KEY: Joi.string().optional(),
+  PRODUCT_ASSETS_S3_FORCE_PATH_STYLE: Joi.boolean().default(true),
   MASTRA_INTERNAL_TOKEN: Joi.string().min(24).required(),
   WORKFLOW_TIME_ZONE: Joi.string().default('Africa/Cairo'),
 

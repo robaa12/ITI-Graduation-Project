@@ -45,6 +45,15 @@ export function validateContentWorkflowInput(
   // they are exactly the three numbers that decide how many posts — and so how
   // many credits — a run costs, and a run whose size is unknown cannot be
   // priced honestly.
+
+  if (
+    input.productAssetIds !== undefined &&
+    (!Array.isArray(input.productAssetIds) ||
+      input.productAssetIds.length > 5 ||
+      input.productAssetIds.some((id) => typeof id !== 'string' || id.length === 0))
+  ) {
+    throw new BadRequestException('productAssetIds must contain at most five asset ids');
+  }
   const platforms = input.platforms;
   if (
     !Array.isArray(platforms) ||

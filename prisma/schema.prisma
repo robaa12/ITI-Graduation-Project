@@ -381,6 +381,7 @@ model Project {
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   campaigns        Campaign[]
   knowledgeSources KnowledgeSource[]
+  productAssets    ProductAsset[]
   brandProfile     Json?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
@@ -388,6 +389,26 @@ model Project {
   @@index([userId])
   @@index([userId, status])
   @@map("project")
+}
+
+/// Private product imagery that can be selected when a campaign's visual
+/// generation run is created. Binary objects live in S3-compatible storage;
+/// only their durable metadata and object key belong in PostgreSQL.
+model ProductAsset {
+  id           String   @id @default(uuid())
+  name         String
+  objectKey    String   @unique
+  mimeType     String
+  sizeBytes    Int
+  width        Int?
+  height       Int?
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([projectId, createdAt])
+  @@map("product_asset")
 }
 
 /// Project-owned material used to ground strategy and content generation.

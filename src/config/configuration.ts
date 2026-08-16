@@ -26,6 +26,15 @@ export default () => ({
     enabled: process.env.RAG_ENABLED === 'true',
   },
 
+  productAssets: {
+    endpoint: process.env.PRODUCT_ASSETS_S3_ENDPOINT,
+    region: process.env.PRODUCT_ASSETS_S3_REGION ?? 'us-east-1',
+    bucket: process.env.PRODUCT_ASSETS_S3_BUCKET,
+    accessKeyId: process.env.PRODUCT_ASSETS_S3_ACCESS_KEY_ID,
+    secretAccessKey: process.env.PRODUCT_ASSETS_S3_SECRET_ACCESS_KEY,
+    forcePathStyle: process.env.PRODUCT_ASSETS_S3_FORCE_PATH_STYLE !== 'false',
+  },
+
   /** Meta OAuth, account discovery, and Graph API publishing. Optional until configured. */
   meta: {
     appId: process.env.META_APP_ID,

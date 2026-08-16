@@ -21,6 +21,7 @@ import { HistoryModule } from './modules/history/history.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 import { SocialModule } from './modules/social/social.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { ProductAssetsModule } from './modules/product-assets/product-assets.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { AdminModule } from './modules/admin/admin.module';
     BillingModule,
     SocialModule,
     AdminModule,
+    ProductAssetsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -40,6 +40,7 @@ import {
   ContentWorkflowJob,
 } from './content-workflow.queue';
 import { validateContentWorkflowInput } from './content-workflow-input.validator';
+import { ProductAssetsService } from '../product-assets/product-assets.service';
 import { QueryContentRunDto } from './dto/query-content-run.dto';
 
 const MAX_INPUT_BYTES = 256 * 1024;
@@ -64,6 +65,7 @@ export class ContentWorkflowService {
     private readonly mastra: MastraClient,
     private readonly generationCredits: GenerationCreditsService,
     private readonly accounting: WorkflowAccountingService,
+    private readonly productAssets: ProductAssetsService,
   ) {}
 
   /**
@@ -130,6 +132,11 @@ export class ContentWorkflowService {
       ...(requested as Prisma.InputJsonObject),
       maxPosts: creditCost,
     };
+
+    const productAssetIds = Array.isArray(input.productAssetIds)
+      ? input.productAssetIds as string[]
+      : [];
+    await this.productAssets.assertOwned(campaign.projectId, productAssetIds);
 
     if (jsonByteLength(input) > MAX_INPUT_BYTES) {
       throw new BadRequestException(
