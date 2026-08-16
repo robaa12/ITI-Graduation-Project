@@ -8,7 +8,12 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 
 export type GenerationCreditUsage = {
-  plan: { code: string; name: string };
+  plan: {
+    code: string;
+    name: string;
+    maxCampaignWeeks: number | null;
+    maxPostsPerWeek: number | null;
+  };
   limit: number;
   used: number;
   remaining: number;
@@ -32,6 +37,8 @@ type CreditUser = {
       name: string;
       active: boolean;
       generationCredits: number;
+      maxCampaignWeeks: number | null;
+      maxPostsPerWeek: number | null;
     } | null;
   } | null;
 };
@@ -66,6 +73,8 @@ const CREDIT_USER_SELECT = {
           name: true,
           active: true,
           generationCredits: true,
+          maxCampaignWeeks: true,
+          maxPostsPerWeek: true,
         },
       },
     },
@@ -230,6 +239,8 @@ export class GenerationCreditsService {
               name: true,
               active: true,
               generationCredits: true,
+              maxCampaignWeeks: true,
+              maxPostsPerWeek: true,
             },
           })
         : null;
@@ -238,6 +249,8 @@ export class GenerationCreditsService {
       name: 'Free',
       active: true,
       generationCredits: 0,
+      maxCampaignWeeks: 1,
+      maxPostsPerWeek: 3,
     };
     const now = new Date();
     const periodExpired =
@@ -245,6 +258,8 @@ export class GenerationCreditsService {
     const missingPeriod =
       !user.generationCreditPeriodStart || !user.generationCreditPeriodEnd;
     const planChanged = user.generationCreditPlanCode !== plan.code;
+    const allowanceChanged =
+      user.generationCreditLimit !== Math.max(0, plan.generationCredits);
 
     let synced: CreditUser = user;
     if (periodExpired || missingPeriod) {
@@ -264,9 +279,9 @@ export class GenerationCreditsService {
         },
         select: CREDIT_USER_SELECT,
       });
-    } else if (planChanged) {
-      // Mid-period plan change: top the allowance up to the new plan's ceiling
-      // and leave everything else alone. Resetting `generationCreditsUsed` here
+    } else if (planChanged || allowanceChanged) {
+      // Mid-period plan or catalog change: move the allowance to the current
+      // ceiling and leave everything else alone. Resetting `generationCreditsUsed` here
       // would hand back every credit already spent, so cycling plans would mint
       // credits for the price of a proration; restarting the period would push
       // the reset date forward on every switch. Keeping both means an upgrade
@@ -293,7 +308,12 @@ export class GenerationCreditsService {
         : null;
 
     return {
-      plan: { code: plan.code, name: plan.name },
+      plan: {
+        code: plan.code,
+        name: plan.name,
+        maxCampaignWeeks: plan.maxCampaignWeeks,
+        maxPostsPerWeek: plan.maxPostsPerWeek,
+      },
       limit,
       used,
       remaining,

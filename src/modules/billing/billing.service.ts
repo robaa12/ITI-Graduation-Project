@@ -215,6 +215,8 @@ export class BillingService {
         priceMonthlyCents: true,
         priceYearlyCents: true,
         generationCredits: true,
+        maxCampaignWeeks: true,
+        maxPostsPerWeek: true,
       },
     });
   }

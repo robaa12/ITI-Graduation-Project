@@ -100,6 +100,10 @@ model Plan {
   /// Fixed monthly workflow allowance. One credit starts one strategy,
   /// content workflow, focused revision, or standalone content generation.
   generationCredits    Int      @default(0)
+  /// Optional campaign caps. Null means the plan inherits the application's
+  /// full supported range rather than imposing a subscription-level limit.
+  maxCampaignWeeks     Int?
+  maxPostsPerWeek      Int?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

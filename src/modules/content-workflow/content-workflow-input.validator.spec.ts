@@ -10,6 +10,7 @@ const validInput = {
   platforms: ['instagram', 'linkedin'],
   duration: '2 weeks',
   postsPerWeek: 3,
+  generateImages: true,
   requireApproval: false,
 };
 
@@ -31,5 +32,17 @@ describe('validateContentWorkflowInput', () => {
     expect(() =>
       validateContentWorkflowInput({ ...validInput, platforms: ['threads'] }),
     ).toThrow(BadRequestException);
+  });
+
+  it('rejects a non-boolean generateImages value', () => {
+    expect(() =>
+      validateContentWorkflowInput({ ...validInput, generateImages: 'yes' }),
+    ).toThrow(BadRequestException);
+  });
+
+  it('rejects more posts than the workflow supports', () => {
+    expect(() =>
+      validateContentWorkflowInput({ ...validInput, postsPerWeek: 21 }),
+    ).toThrow('postsPerWeek must be an integer between 1 and 20');
   });
 });

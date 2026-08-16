@@ -64,9 +64,13 @@ export function validateContentWorkflowInput(
 
   if (
     input.postsPerWeek !== undefined &&
-    (!Number.isInteger(input.postsPerWeek) || Number(input.postsPerWeek) < 1)
+    (!Number.isInteger(input.postsPerWeek) ||
+      Number(input.postsPerWeek) < 1 ||
+      Number(input.postsPerWeek) > 20)
   ) {
-    throw new BadRequestException('postsPerWeek must be a positive integer');
+    throw new BadRequestException(
+      'postsPerWeek must be an integer between 1 and 20',
+    );
   }
 
   if (
@@ -85,5 +89,12 @@ export function validateContentWorkflowInput(
     typeof input.requireApproval !== 'boolean'
   ) {
     throw new BadRequestException('requireApproval must be a boolean');
+  }
+
+  if (
+    input.generateImages !== undefined &&
+    typeof input.generateImages !== 'boolean'
+  ) {
+    throw new BadRequestException('generateImages must be a boolean');
   }
 }

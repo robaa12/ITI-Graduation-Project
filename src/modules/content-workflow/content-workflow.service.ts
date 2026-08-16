@@ -20,7 +20,9 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 
+import type { WorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
+import { validateCampaignPlanLimits } from '../../common/validators/campaign-plan-limits.validator';
 import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
@@ -82,7 +84,7 @@ export class ContentWorkflowService {
       campaignId,
       body,
     );
-    let temporalContext;
+    let temporalContext: WorkflowTemporalContext;
     try {
       temporalContext = buildWorkflowTemporalContext(campaign);
     } catch (error) {
@@ -90,7 +92,10 @@ export class ContentWorkflowService {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const input = { ...untrustedInput, temporalContext };
+    const input: Prisma.InputJsonObject = {
+      ...(untrustedInput as Prisma.InputJsonObject),
+      temporalContext: { ...temporalContext },
+    };
 
     validateContentWorkflowInput(input);
 
@@ -99,6 +104,9 @@ export class ContentWorkflowService {
         `Workflow input must serialise to at most ${MAX_INPUT_BYTES} bytes`,
       );
     }
+
+    const creditUsage = await this.generationCredits.getUsage(userId);
+    validateCampaignPlanLimits(input, creditUsage.plan);
 
     // The worker creates and starts this exact ID at Mastra, keeping Studio,
     // the queue job, and this database row attached to one execution.
@@ -109,7 +117,7 @@ export class ContentWorkflowService {
           campaignId,
           strategyId,
           runId,
-          input: input as Prisma.InputJsonValue,
+          input,
           status: WorkflowRunStatus.PENDING,
         },
       });

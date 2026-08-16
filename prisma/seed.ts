@@ -21,6 +21,8 @@ type PlanSeed = {
   priceMonthlyCents?: number;
   priceYearlyCents?: number;
   generationCredits: number;
+  maxCampaignWeeks?: number;
+  maxPostsPerWeek?: number;
 };
 
 const PLANS: PlanSeed[] = [
@@ -31,7 +33,9 @@ const PLANS: PlanSeed[] = [
     sortOrder: 1,
     priceMonthlyCents: 0,
     priceYearlyCents: 0,
-    generationCredits: 6,
+    generationCredits: 4,
+    maxCampaignWeeks: 1,
+    maxPostsPerWeek: 3,
   },
   {
     code: 'pro',
@@ -40,7 +44,9 @@ const PLANS: PlanSeed[] = [
     sortOrder: 2,
     priceMonthlyCents: 1500,
     priceYearlyCents: 15000,
-    generationCredits: 60,
+    generationCredits: 40,
+    maxCampaignWeeks: 3,
+    maxPostsPerWeek: 6,
   },
   {
     code: 'business',
@@ -88,6 +94,8 @@ async function main() {
           priceMonthlyCents: plan.priceMonthlyCents ?? null,
           priceYearlyCents: plan.priceYearlyCents ?? null,
           generationCredits: plan.generationCredits,
+          maxCampaignWeeks: plan.maxCampaignWeeks ?? null,
+          maxPostsPerWeek: plan.maxPostsPerWeek ?? null,
         },
         create: {
           code: plan.code,
@@ -101,6 +109,8 @@ async function main() {
           priceMonthlyCents: plan.priceMonthlyCents ?? null,
           priceYearlyCents: plan.priceYearlyCents ?? null,
           generationCredits: plan.generationCredits,
+          maxCampaignWeeks: plan.maxCampaignWeeks ?? null,
+          maxPostsPerWeek: plan.maxPostsPerWeek ?? null,
         },
       });
       console.log(`Seeded plan "${plan.code}"`);

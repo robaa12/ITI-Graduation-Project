@@ -17,7 +17,9 @@ describe('GenerationCreditsService', () => {
           code: 'free',
           name: 'Free',
           active: true,
-          generationCredits: 6,
+          generationCredits: 4,
+          maxCampaignWeeks: 1,
+          maxPostsPerWeek: 3,
         }),
       },
       user: {
@@ -48,13 +50,13 @@ describe('GenerationCreditsService', () => {
 
     expect(usage).toMatchObject({
       plan: { code: 'free', name: 'Free' },
-      limit: 6,
+      limit: 4,
       used: 1,
-      remaining: 5,
+      remaining: 3,
       canGenerate: true,
     });
     expect(tx.user.updateMany).toHaveBeenCalledWith({
-      where: { id: 'user-1', generationCreditsUsed: { lt: 6 } },
+      where: { id: 'user-1', generationCreditsUsed: { lt: 4 } },
       data: { generationCreditsUsed: { increment: 1 } },
     });
     expect(tx.generationCreditEvent.create).toHaveBeenCalledWith({
@@ -77,13 +79,13 @@ describe('GenerationCreditsService', () => {
       'content-workflow:run-1',
     );
 
-    expect(usage.remaining).toBe(6);
+    expect(usage.remaining).toBe(4);
     expect(tx.user.updateMany).not.toHaveBeenCalled();
     expect(tx.generationCreditEvent.create).not.toHaveBeenCalled();
   });
 
   it('blocks a generation when the balance is empty', async () => {
-    tx.user.findUnique.mockResolvedValue(freeUser(6));
+    tx.user.findUnique.mockResolvedValue(freeUser(4));
 
     await expect(
       service.consumeInTransaction(
@@ -114,7 +116,7 @@ describe('GenerationCreditsService', () => {
   it('blocks paid-plan generation while payment needs attention', async () => {
     tx.user.findUnique.mockResolvedValue({
       ...freeUser(1),
-      generationCreditLimit: 60,
+      generationCreditLimit: 40,
       generationCreditPlanCode: 'pro',
       subscription: {
         status: SubscriptionStatus.PAST_DUE,
@@ -122,7 +124,9 @@ describe('GenerationCreditsService', () => {
           code: 'pro',
           name: 'Pro',
           active: true,
-          generationCredits: 60,
+          generationCredits: 40,
+          maxCampaignWeeks: 3,
+          maxPostsPerWeek: 6,
         },
       },
     });
@@ -140,17 +144,17 @@ describe('GenerationCreditsService', () => {
 
   describe('mid-period plan changes', () => {
     it('tops the allowance up to the new plan without returning spent credits', async () => {
-      onPlanChange({ from: pro(55), to: BUSINESS_PLAN });
+      onPlanChange({ from: pro(35), to: BUSINESS_PLAN });
 
       const usage = await service.getUsageInTransaction(tx, 'user-1');
 
-      // The 55 already spent stay spent: the upgrade buys the 180 difference,
+      // The 35 already spent stay spent: the upgrade only raises the ceiling,
       // not a second full allowance.
       expect(usage).toMatchObject({
         plan: { code: 'business' },
         limit: 240,
-        used: 55,
-        remaining: 185,
+        used: 35,
+        remaining: 205,
         canGenerate: true,
       });
       expect(tx.user.update).toHaveBeenCalledWith({
@@ -164,7 +168,7 @@ describe('GenerationCreditsService', () => {
     });
 
     it('leaves the reset date where it was', async () => {
-      onPlanChange({ from: pro(55), to: BUSINESS_PLAN });
+      onPlanChange({ from: pro(35), to: BUSINESS_PLAN });
 
       const usage = await service.getUsageInTransaction(tx, 'user-1');
 
@@ -197,8 +201,8 @@ describe('GenerationCreditsService', () => {
       const usage = await service.getUsageInTransaction(tx, 'user-1');
 
       expect(usage).toMatchObject({
-        limit: 60,
-        used: 60,
+        limit: 40,
+        used: 40,
         remaining: 0,
         canGenerate: false,
         blockedReason: 'credits_exhausted',
@@ -208,7 +212,7 @@ describe('GenerationCreditsService', () => {
     it('still resets in full when the period has also expired', async () => {
       onPlanChange({
         from: {
-          ...pro(55),
+          ...pro(35),
           generationCreditPeriodEnd: new Date('2026-08-01T00:00:00.000Z'),
         },
         to: BUSINESS_PLAN,
@@ -227,12 +231,31 @@ describe('GenerationCreditsService', () => {
     });
 
     it('does not touch the row when the plan and period are both unchanged', async () => {
-      onPlanChange({ from: pro(55), to: PRO_PLAN });
+      onPlanChange({ from: pro(35), to: PRO_PLAN });
 
       await expect(
         service.getUsageInTransaction(tx, 'user-1'),
-      ).resolves.toMatchObject({ limit: 60, used: 55, remaining: 5 });
+      ).resolves.toMatchObject({ limit: 40, used: 35, remaining: 5 });
       expect(tx.user.update).not.toHaveBeenCalled();
+    });
+
+    it('applies a changed catalog allowance without resetting usage', async () => {
+      onPlanChange({
+        from: { ...pro(3), generationCreditLimit: 60 },
+        to: PRO_PLAN,
+      });
+
+      await expect(
+        service.getUsageInTransaction(tx, 'user-1'),
+      ).resolves.toMatchObject({ limit: 40, used: 3, remaining: 37 });
+      expect(tx.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: {
+          generationCreditLimit: 40,
+          generationCreditPlanCode: 'pro',
+        },
+        select: expect.anything(),
+      });
     });
 
     /**
@@ -256,20 +279,24 @@ describe('GenerationCreditsService', () => {
     code: 'pro',
     name: 'Pro',
     active: true,
-    generationCredits: 60,
+    generationCredits: 40,
+    maxCampaignWeeks: 3,
+    maxPostsPerWeek: 6,
   };
   const BUSINESS_PLAN = {
     code: 'business',
     name: 'Business',
     active: true,
     generationCredits: 240,
+    maxCampaignWeeks: null,
+    maxPostsPerWeek: null,
   };
 
   function pro(used: number) {
     return {
       id: 'user-1',
       generationCreditsUsed: used,
-      generationCreditLimit: 60,
+      generationCreditLimit: 40,
       generationCreditPlanCode: 'pro',
       generationCreditPeriodStart: periodStart,
       generationCreditPeriodEnd: periodEnd,
@@ -280,7 +307,7 @@ describe('GenerationCreditsService', () => {
     return {
       id: 'user-1',
       generationCreditsUsed: used,
-      generationCreditLimit: 6,
+      generationCreditLimit: 4,
       generationCreditPlanCode: 'free',
       generationCreditPeriodStart: periodStart,
       generationCreditPeriodEnd: periodEnd,

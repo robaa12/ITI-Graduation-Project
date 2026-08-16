@@ -225,6 +225,8 @@ describe('BillingService', () => {
           priceMonthlyCents: 1500,
           priceYearlyCents: 15000,
           generationCredits: 60,
+          maxCampaignWeeks: 3,
+          maxPostsPerWeek: 6,
         },
         {
           code: 'basic',
@@ -234,6 +236,8 @@ describe('BillingService', () => {
           priceMonthlyCents: null,
           priceYearlyCents: null,
           generationCredits: 0,
+          maxCampaignWeeks: null,
+          maxPostsPerWeek: null,
         },
       ];
       prisma.plan.findMany.mockResolvedValue(planRows);
@@ -250,6 +254,8 @@ describe('BillingService', () => {
           priceMonthlyCents: true,
           priceYearlyCents: true,
           generationCredits: true,
+          maxCampaignWeeks: true,
+          maxPostsPerWeek: true,
         },
       });
       expect(Object.keys(planRows[0]).some((k) => k.includes('Price'))).toBe(
