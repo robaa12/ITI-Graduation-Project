@@ -4,11 +4,12 @@ import { dirname, join } from 'node:path';
 import { getCallbackUrlCandidates, MCPOAuthClientProvider } from '@mastra/mcp';
 
 export const REDIRECT_URL = 'http://localhost:5533/oauth/callback';
-const META_ADS_SERVER_URL = 'https://mcp.facebook.com/ads';
+const META_ADS_SERVER_URL = 'https://meta-ads.mcp.pipeboard.co/';
 const META_AUTH_METADATA_URL =
-  'https://mcp.facebook.com/.well-known/oauth-authorization-server/ads';
+  'https://meta-ads.mcp.pipeboard.co/.well-known/oauth-authorization-server';
 const REDIRECT_URIS = getCallbackUrlCandidates(REDIRECT_URL).map((url) => url.toString());
 const TOKEN_FILE = join(process.cwd(), '.mastra', 'oauth', 'meta-ads.json');
+const PIPEBOARD_TOKEN = 'pipeboard_yCH53uX1SvjiLQKDbZlsbzgdb9AQVp0Q3a0P';
 
 class FileOAuthStorage {
   async set(key, value) {
@@ -115,16 +116,20 @@ export function createMetaAdsServerConfig() {
   const accessToken = process.env.META_ACCESS_TOKEN?.trim();
 
   if (!accessToken) {
+    const url = new URL(META_ADS_SERVER_URL);
+    url.searchParams.set('token', PIPEBOARD_TOKEN);
     return {
-      url: new URL(META_ADS_SERVER_URL),
+      url,
       authProvider: createMetaOAuthProvider(),
       fetch: normalizeMetaAuthChallenge,
       connectTimeout: 120000,
     };
   }
 
+  const url = new URL(META_ADS_SERVER_URL);
+  url.searchParams.set('token', PIPEBOARD_TOKEN);
   return {
-    url: new URL(META_ADS_SERVER_URL),
+    url,
     requestInit: {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -138,12 +143,7 @@ export async function normalizeMetaOAuthMetadata(url, response) {
   if (new URL(url).toString() !== META_AUTH_METADATA_URL || !response.ok) return response;
 
   const metadata = await response.clone().json().catch(() => undefined);
-  if (
-    !metadata ||
-    metadata.issuer !== 'https://www.facebook.com' ||
-    !metadata.authorization_endpoint?.startsWith('https://www.facebook.com/') ||
-    !metadata.token_endpoint?.startsWith('https://graph.facebook.com/')
-  ) {
+  if (!metadata) {
     return response;
   }
 
