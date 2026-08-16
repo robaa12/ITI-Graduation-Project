@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "mastra dev",
+    "dev:auto": "node --env-file=.env --experimental-strip-types scripts/auto-run-campaign.ts",
     "build": "mastra build",
     "start": "mastra start",
     "auth:meta": "node --env-file=.env scripts/auth-meta.mjs",
