@@ -7,6 +7,7 @@ import { GenerationCreditsModule } from '../generation-credits/generation-credit
 import { MastraModule } from '../mastra/mastra.module';
 import { StrategyModule } from '../strategy/strategy.module';
 import { WorkflowAccountingModule } from '../workflow-accounting/workflow-accounting.module';
+import { ProductAssetsModule } from '../product-assets/product-assets.module';
 import {
   CampaignContentRunController,
   ContentRunController,
@@ -24,6 +25,7 @@ import { ContentWorkflowService } from './content-workflow.service';
     // For the ownership check on the strategy a run is built from.
     StrategyModule,
     WorkflowAccountingModule,
+    ProductAssetsModule,
     BullModule.registerQueue({ name: CONTENT_WORKFLOW_QUEUE }),
   ],
   controllers: [CampaignContentRunController, ContentRunController],

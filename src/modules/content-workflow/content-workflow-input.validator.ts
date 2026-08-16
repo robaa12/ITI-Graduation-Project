@@ -40,6 +40,15 @@ export function validateContentWorkflowInput(
     throw new BadRequestException('campaignStrategy must be an object');
   }
 
+  if (
+    input.productAssetIds !== undefined &&
+    (!Array.isArray(input.productAssetIds) ||
+      input.productAssetIds.length > 5 ||
+      input.productAssetIds.some((id) => typeof id !== 'string' || id.length === 0))
+  ) {
+    throw new BadRequestException('productAssetIds must contain at most five asset ids');
+  }
+
   const platforms = input.platforms;
   if (
     platforms !== undefined &&

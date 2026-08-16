@@ -32,6 +32,43 @@ services:
       timeout: 5s
       retries: 5
 
+  # Local S3-compatible storage for private product-image uploads. The API
+  # accesses this service over the Compose network; the console is exposed for
+  # local inspection only.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - '${MINIO_API_PORT:-9000}:9000'
+      - '${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://127.0.0.1:9000/minio/health/live || exit 1']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Creates the bucket once. `mc mb --ignore-existing` makes repeated Compose
+  # starts safe and preserves the persistent MinIO volume.
+  minio-init:
+    image: minio/mc:latest
+    restart: 'no'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-iti-product-assets}
+    entrypoint: >-
+      /bin/sh -c "mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      mc mb --ignore-existing local/$$MINIO_BUCKET"
+    depends_on:
+      minio:
+        condition: service_healthy
+
   # Deliberately opt-in: do not start this profile or pull a model until the
   # host GPU/driver is healthy. Mastra running on the host reaches it through
   # http://localhost:11434; a containerized Mastra can use http://ollama:11434.
@@ -129,6 +166,12 @@ services:
       WORKFLOW_TIME_ZONE: ${WORKFLOW_TIME_ZONE:-Africa/Cairo}
       RAG_ENABLED: ${RAG_ENABLED:-false}
       MASTRA_INTERNAL_TOKEN: ${MASTRA_INTERNAL_TOKEN:-}
+      PRODUCT_ASSETS_S3_ENDPOINT: http://minio:9000
+      PRODUCT_ASSETS_S3_BUCKET: ${MINIO_BUCKET:-iti-product-assets}
+      PRODUCT_ASSETS_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      PRODUCT_ASSETS_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      PRODUCT_ASSETS_S3_REGION: us-east-1
+      PRODUCT_ASSETS_S3_FORCE_PATH_STYLE: 'true'
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:5173}
@@ -150,9 +193,12 @@ services:
         condition: service_healthy
       mastra:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
   redis_data:
   ollama_data:
   mastra_data:
+  minio_data:

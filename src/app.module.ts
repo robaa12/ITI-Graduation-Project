@@ -20,6 +20,7 @@ import { ContentWorkflowModule } from './modules/content-workflow/content-workfl
 import { HistoryModule } from './modules/history/history.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 import { SocialModule } from './modules/social/social.module';
+import { ProductAssetsModule } from './modules/product-assets/product-assets.module';
 
 @Module({
   imports: [
@@ -66,6 +67,7 @@ import { SocialModule } from './modules/social/social.module';
     KnowledgeModule,
     BillingModule,
     SocialModule,
+    ProductAssetsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
