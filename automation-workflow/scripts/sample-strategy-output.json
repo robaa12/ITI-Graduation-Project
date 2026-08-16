@@ -1,0 +1,198 @@
+{
+  "product": {
+    "name": "FocusPlanner Pro",
+    "type": "Physical productivity planner",
+    "industry": "Stationery / Productivity",
+    "businessModel": "ecommerce",
+    "productMaturity": "growth",
+    "pricingModel": "one-time",
+    "pricingNotes": "$39.99 per planner, bulk discounts available",
+    "coreFeatures": [
+      "Daily/weekly/monthly spreads",
+      "Energy-based task scheduling",
+      "Habit tracker",
+      "Reflection prompts",
+      "Premium paper, lay-flat binding"
+    ],
+    "customerProblems": [
+      "Digital tools add screen time",
+      "Generic planners don't match energy levels",
+      "No accountability system"
+    ],
+    "valueProposition": "The only planner designed around your energy, not just your time.",
+    "uniqueSellingPoints": [
+      "Energy-based scheduling method",
+      "Science-backed productivity framework",
+      "Premium tactile experience"
+    ],
+    "differentiators": [
+      "Not just dates — energy zones",
+      "Built-in weekly review system"
+    ],
+    "constraints": ["Physical inventory", "Shipping logistics"],
+    "assumptions": ["Customers prefer physical over digital", "Willing to pay premium for quality"]
+  },
+  "stp": {
+    "segments": [
+      {
+        "id": "founders-creators",
+        "label": "Founders, creators, knowledge workers",
+        "demographics": ["25-45", "Urban", "Income $75k+"],
+        "geography": ["US", "CA", "UK", "AU"],
+        "psychographics": ["High agency", "Self-optimizers", "Value deep work"],
+        "behavior": ["Buy productivity tools", "Follow productivity content"],
+        "companySize": ["1-50", "Solo"],
+        "industry": ["Tech", "Creative", "Consulting"],
+        "budget": "$20-100 per tool",
+        "estimatedSize": "2M"
+      }
+    ],
+    "targetedSegments": [
+      { "segmentId": "founders-creators", "priority": "primary", "justification": "Highest pain/value fit" }
+    ],
+    "positioning": {
+      "positioningStatement": "For founders and creators who do deep work, FocusPlanner Pro is the physical planner that schedules around your energy, not the clock, because your best work happens in flow, not by the hour.",
+      "valueProposition": "The only planner designed around your energy, not just your time.",
+      "brandPromise": "Do less, but better.",
+      "keyDifferentiators": ["Energy zones", "Weekly review", "Premium materials"],
+      "messagingPillars": [
+        { "pillar": "Energy > Time", "description": "Match tasks to your natural energy cycles" },
+        { "pillar": "Tactile focus", "description": "No screens, no notifications, just paper" },
+        { "pillar": "Built-in accountability", "description": "Weekly review keeps you honest" }
+      ],
+      "toneOfVoice": "Calm, authoritative, minimal"
+    }
+  },
+  "personas": [
+    {
+      "id": "sarah-founder",
+      "name": "Sarah Chen",
+      "role": "SaaS Founder",
+      "segmentId": "founders-creators",
+      "company": "FlowState.io (12 people)",
+      "companySize": "12",
+      "location": "Austin, TX",
+      "goals": ["Ship product v2", "Reclaim 10hrs/week for deep work"],
+      "frustrations": ["Context switching", "Endless meetings", "Digital fatigue"],
+      "painPoints": ["Can't sustain focus", "Planner becomes a guilt journal"],
+      "motivations": ["Build great product", "Work-life integration"],
+      "buyingTriggers": ["Burnout scare", "New quarter planning", "Peer recommendation"],
+      "objections": ["Another physical thing to carry", "Price vs apps"],
+      "decisionCriteria": ["Paper quality", "Framework validity", "Peer reviews"],
+      "preferredChannels": ["facebook", "linkedin", "newsletter", "podcast"],
+      "preferredContent": ["long-form", "case-study", "video-demo"],
+      "influenceMap": ["Twitter founder community", "Indie Hackers", "Newsletter writers"],
+      "summary": "Sarah builds SaaS and drowns in shallow work. She needs a system that protects deep work time."
+    }
+  ],
+  "buyerJourney": [
+    {
+      "personaId": "sarah-founder",
+      "personaName": "Sarah Chen",
+      "awareness": {
+        "stage": "awareness",
+        "problems": ["Digital tools increase screen time", "No energy-aware planning"],
+        "questions": ["Is there a planner for energy management?"],
+        "contentNeeds": [{ "type": "video", "topic": "Energy-based planning explained" }],
+        "channels": ["facebook", "linkedin"],
+        "kpis": ["Video views", "Landing page visits"]
+      },
+      "consideration": {
+        "stage": "consideration",
+        "problems": ["Comparing paper planners", "Skeptical of 'energy' claim"],
+        "questions": ["Does the framework actually work?"],
+        "contentNeeds": [{ "type": "case-study", "topic": "Founder reclaims 10hrs/week" }],
+        "channels": ["facebook", "newsletter"],
+        "kpis": ["Case study reads", "Email signups"]
+      },
+      "decision": {
+        "stage": "decision",
+        "objections": ["Price", "Shipping time"],
+        "purchaseTriggers": ["Q2 planning", "Free shipping offer"],
+        "cta": "Get your FocusPlanner",
+        "channels": ["facebook", "email"],
+        "kpis": ["Purchases", "ROAS"]
+      },
+      "retention": { "stage": "retention", "followUp": ["Onboarding email series", "Weekly tip"], "channels": ["email"] },
+      "advocacy": { "stage": "advocacy", "referralOpportunities": ["Affiliate program"], "channels": ["email"] }
+    }
+  ],
+  "smartObjectives": [
+    {
+      "id": "obj-sales-q1",
+      "objective": "Generate $50k revenue from Facebook ads in Q1",
+      "specific": "Sell 1,250 planners at $40 avg order value",
+      "measurable": "Meta Ads Manager purchase conversion value",
+      "achievable": "3% conversion rate at $2 CPC = $2.67 CPA, 1,250 sales = $3,333 ad spend",
+      "relevant": "Direct revenue growth",
+      "timeBound": "90 days",
+      "kpi": "Revenue",
+      "targetValue": "50000",
+      "deadline": "2024-03-31",
+      "funnelStage": "decision",
+      "measurementMethod": "Meta Ads Manager + Shopify"
+    }
+  ],
+  "campaignStrategy": {
+    "summary": "Facebook conversion campaign targeting founders/creators with energy-based planning message. Single campaign, single ad set, multiple creatives from content calendar.",
+    "primaryChannels": [
+      { "channel": "facebook", "rationale": "Primary channel for founder demographic", "estimatedShare": 100, "primaryFunnelStage": "decision", "expectedKpis": ["Purchases", "ROAS", "CPA"] }
+    ],
+    "campaignRecommendations": [
+      {
+        "id": "fb-conversion-founders",
+        "name": "FocusPlanner Pro - Founder Conversion",
+        "type": "conversion",
+        "primaryFunnelStage": "decision",
+        "objective": "Drive planner purchases from founders/creators via Facebook",
+        "targetPersonaIds": ["sarah-founder"],
+        "channels": ["facebook"],
+        "contentMix": [
+          { "type": "image", "topic": "Morning planner ritual", "goal": "Desire" },
+          { "type": "image", "topic": "Energy optimization split", "goal": "Proof" }
+        ],
+        "primaryKpi": "Purchases",
+        "secondaryKpis": ["ROAS", "CPA", "CTR"],
+        "duration": "8 weeks"
+      }
+    ],
+    "audienceStrategy": {
+      "primaryAudience": "Founders, creators, knowledge workers 25-45 in US/CA/UK/AU interested in productivity, entrepreneurship, SaaS",
+      "secondaryAudiences": [],
+      "retargetingAudiences": [
+        "Website visitors 30d",
+        "Video viewers 50%+",
+        "Add-to-cart abandoners"
+      ],
+      "lookalikeSeeds": ["Purchasers", "High-value visitors"]
+    },
+    "creativeDirection": {
+      "keyMessages": [
+        "Plan by energy, not hours.",
+        "Your best work happens in flow.",
+        "The planner that protects deep work."
+      ],
+      "visualStyle": "Clean, warm, tactile product photography. Morning light. Minimal props.",
+      "storytellingApproach": "Show the problem (chaos) → the method (energy zones) → the result (calm focus)",
+      "doList": ["Show real product", "Energy zone close-ups", "Morning context"],
+      "dontList": ["No stock photos", "No generic 'hustle' messaging", "No fake reviews"]
+    },
+    "ctaStrategy": {
+      "primaryCta": "Shop Now",
+      "secondaryCtas": ["Learn More", "See How It Works"],
+      "ctaHierarchy": "Shop Now on all conversion ads"
+    },
+    "budgetAllocation": [
+      { "bucket": "Facebook (conversion)", "percentage": 100, "rationale": "Single channel, single objective" }
+    ],
+    "kpis": [
+      { "name": "Purchases", "target": "1250", "measurementCadence": "Weekly", "owner": "Growth" },
+      { "name": "ROAS", "target": ">3.0", "measurementCadence": "Weekly", "owner": "Growth" },
+      { "name": "CPA", "target": "<$15", "measurementCadence": "Weekly", "owner": "Growth" }
+    ],
+    "experiments": [],
+    "risks": [
+      { "risk": "High CPA in competitive niche", "mitigation": "Test broad targeting, optimize creative hook" }
+    ]
+  }
+}

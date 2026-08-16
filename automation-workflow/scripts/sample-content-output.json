@@ -1,0 +1,31 @@
+{
+  "calendar": [
+    {
+      "date": "2024-01-15",
+      "platform": "facebook",
+      "caption": "Ready to transform your mornings? ☕ Our new productivity planner helps you focus on what matters most. Link in bio to grab yours!",
+      "hashtags": ["#productivity", "#morningroutine", "#plannerlife", "#goalsetting"],
+      "visualPrompt": "Clean flat-lay of a minimalist planner open to a weekly spread, coffee cup beside it, natural morning light, soft shadows",
+      "imageUrl": "https://cdn.example.com/generated/facebook-planner-morning.jpg",
+      "cta": "Shop Now"
+    },
+    {
+      "date": "2024-01-22",
+      "platform": "facebook",
+      "caption": "Stop optimizing your to-do list. Start optimizing your energy. 🧵\n\n1/ Your peak focus window is 2-3 hrs max.\n2/ Protect it like revenue.\n3/ Everything else? Delegate, defer, or delete.\n\nThe planner that enforces this: [link]",
+      "hashtags": ["#productivitytips", "#deeppwork", "#founderlife"],
+      "visualPrompt": "Split screen: chaotic desk vs clean planner workflow, warm lighting",
+      "imageUrl": "https://cdn.example.com/generated/facebook-energy-optimization.jpg",
+      "cta": "Learn More"
+    },
+    {
+      "date": "2024-01-29",
+      "platform": "instagram",
+      "caption": "POV: You finally found a planner that doesn't make you feel guilty 😌 #plannertok #productivityhacks",
+      "hashtags": ["#plannertok", "#productivityhacks", "#adhdorganization"],
+      "visualPrompt": "Fast-paced 15s video: person flips through planner, taps checkboxes",
+      "imageUrl": "https://cdn.example.com/generated/instagram-planner-demo.mp4",
+      "cta": "Link in bio"
+    }
+  ]
+}
