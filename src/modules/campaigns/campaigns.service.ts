@@ -160,6 +160,46 @@ export class CampaignsService {
   }
 
   /**
+   * Admin variant: edits a campaign regardless of project ownership. Reuses the
+   * same field validation and date-range rules as {@link update}. Editing a
+   * published campaign forces it back to DRAFT and clears `publishedAt`, so the
+   * invariant that `publishedAt` always points at the exact published version
+   * is preserved — the same rule the user-facing save-draft flow enforces. An
+   * empty body is rejected because, on a published campaign, it would otherwise
+   * un-publish with no actual edit.
+   */
+  async adminUpdate(id: string, dto: UpdateCampaignDto): Promise<Campaign> {
+    const campaign = await this.findCampaignOrFail(id);
+
+    if (campaign.status === CampaignStatus.PUBLISHED && !hasAnyValue(dto)) {
+      throw new BadRequestException(
+        'Provide at least one field to edit a published campaign, or use ' +
+          'POST /admin/campaigns/:id/unpublish to take it offline.',
+      );
+    }
+
+    return this.prisma.campaign.update({
+      where: { id },
+      data: {
+        ...this.buildUpdateData(campaign, dto),
+        ...(campaign.status === CampaignStatus.PUBLISHED
+          ? { status: CampaignStatus.DRAFT, publishedAt: null }
+          : {}),
+      },
+    });
+  }
+
+  private async findCampaignOrFail(id: string): Promise<Campaign> {
+    const campaign = await this.prisma.campaign.findUnique({ where: { id } });
+
+    if (!campaign) {
+      throw new NotFoundException(`Campaign ${id} not found`);
+    }
+
+    return campaign;
+  }
+
+  /**
    * Saves edits and moves the campaign back to draft. Used by the editor's
    * "Save draft" action, which must never leave a campaign published.
    *
@@ -204,6 +244,20 @@ export class CampaignsService {
     });
   }
 
+  /** Admin variant: publish a campaign regardless of project ownership. */
+  async adminPublish(id: string): Promise<Campaign> {
+    const campaign = await this.findCampaignOrFail(id);
+
+    if (campaign.status === CampaignStatus.PUBLISHED) {
+      throw new ConflictException('Campaign is already published');
+    }
+
+    return this.prisma.campaign.update({
+      where: { id },
+      data: { status: CampaignStatus.PUBLISHED, publishedAt: new Date() },
+    });
+  }
+
   /**
    * Takes a published campaign offline without touching its content. The
    * explicit counterpart to {@link publish}, so un-publishing is always
@@ -222,11 +276,41 @@ export class CampaignsService {
     });
   }
 
+  /** Admin variant: unpublish a campaign regardless of project ownership. */
+  async adminUnpublish(id: string): Promise<Campaign> {
+    const campaign = await this.findCampaignOrFail(id);
+
+    if (campaign.status === CampaignStatus.DRAFT) {
+      throw new ConflictException('Campaign is not published');
+    }
+
+    return this.prisma.campaign.update({
+      where: { id },
+      data: { status: CampaignStatus.DRAFT, publishedAt: null },
+    });
+  }
+
   /** Removes the campaign together with its generated content. */
   async remove(userId: string, id: string): Promise<void> {
     await this.findOwnedOrFail(userId, id);
 
     await this.prisma.campaign.delete({ where: { id } });
+  }
+
+  /**
+   * Admin variant: deletes a campaign regardless of project ownership. The
+   * schema cascade removes its strategies, content runs, and generated content
+   * (and, through them, workflow executions and social publications), so no
+   * orphan rows are left behind.
+   */
+  async adminRemove(
+    id: string,
+  ): Promise<{ id: string; name: string; deleted: boolean }> {
+    const campaign = await this.findCampaignOrFail(id);
+
+    await this.prisma.campaign.delete({ where: { id } });
+
+    return { id, name: campaign.name, deleted: true };
   }
 
   /**
@@ -298,9 +382,7 @@ export class CampaignsService {
       .replace(/[^\p{L}\p{N}'’-]+/gu, ' ')
       .trim()
       .split(/\s+/u)
-      .filter(
-        (word) => word && !fillerWords.has(word.toLocaleLowerCase()),
-      );
+      .filter((word) => word && !fillerWords.has(word.toLocaleLowerCase()));
     const words: string[] = [];
 
     for (const word of [
