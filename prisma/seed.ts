@@ -42,8 +42,8 @@ const PLANS: PlanSeed[] = [
     name: 'Pro',
     description: 'For individual professionals who need more.',
     sortOrder: 2,
-    priceMonthlyCents: 1500,
-    priceYearlyCents: 15000,
+    priceMonthlyCents: 2500,
+    priceYearlyCents: 25000,
     generationCredits: 40,
     maxCampaignWeeks: 3,
     maxPostsPerWeek: 6,
@@ -53,9 +53,9 @@ const PLANS: PlanSeed[] = [
     name: 'Business',
     description: 'For growing teams.',
     sortOrder: 3,
-    priceMonthlyCents: 4000,
-    priceYearlyCents: 40000,
-    generationCredits: 240,
+    priceMonthlyCents: 5000,
+    priceYearlyCents: 50000,
+    generationCredits: 100,
   },
 ];
 
