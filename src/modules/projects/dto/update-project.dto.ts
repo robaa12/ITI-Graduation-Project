@@ -1,5 +1,11 @@
 import { Type } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, MinLength, ValidateNested } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
 import { BrandProfileDto } from './brand-profile.dto';
 
 export class UpdateProjectDto {

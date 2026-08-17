@@ -127,7 +127,10 @@ export class ProjectsService {
           ? { description: dto.description }
           : {}),
         ...(dto.brandProfile !== undefined
-          ? { brandProfile: dto.brandProfile as unknown as Prisma.InputJsonValue }
+          ? {
+              brandProfile:
+                dto.brandProfile as unknown as Prisma.InputJsonValue,
+            }
           : {}),
       },
     });
