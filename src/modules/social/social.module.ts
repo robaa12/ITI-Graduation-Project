@@ -24,5 +24,6 @@ import { TokenCipherService } from './token-cipher.service';
     SocialPublicationsService,
     SocialPublicationProcessor,
   ],
+  exports: [SocialPublicationsService],
 })
 export class SocialModule {}
