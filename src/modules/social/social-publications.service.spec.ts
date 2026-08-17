@@ -98,7 +98,7 @@ describe('SocialPublicationsService', () => {
     } as unknown as PrismaService;
     const service = new SocialPublicationsService(prisma, {
       add: jest.fn(),
-    } as unknown as Queue<SocialPublicationJob>);
+    });
 
     await expect(
       service.create('user-1', 'content-1', {
@@ -119,7 +119,7 @@ describe('SocialPublicationsService', () => {
     } as unknown as PrismaService;
     const service = new SocialPublicationsService(prisma, {
       add: jest.fn(),
-    } as unknown as Queue<SocialPublicationJob>);
+    });
 
     await expect(
       service.create('user-1', 'content-1', {
