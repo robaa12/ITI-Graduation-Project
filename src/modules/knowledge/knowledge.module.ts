@@ -11,7 +11,12 @@ import { KnowledgeService } from './knowledge.service';
 import { WebsiteCrawlerService } from './website-crawler.service';
 
 @Module({
-  imports: [AuthModule, ProjectsModule, MastraModule, BullModule.registerQueue({ name: KNOWLEDGE_QUEUE })],
+  imports: [
+    AuthModule,
+    ProjectsModule,
+    MastraModule,
+    BullModule.registerQueue({ name: KNOWLEDGE_QUEUE }),
+  ],
   controllers: [KnowledgeController],
   providers: [KnowledgeService, KnowledgeProcessor, WebsiteCrawlerService],
   exports: [KnowledgeService],
