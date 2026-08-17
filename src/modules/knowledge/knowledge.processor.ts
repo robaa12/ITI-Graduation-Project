@@ -6,12 +6,19 @@ import { KNOWLEDGE_QUEUE, KnowledgeIndexJob } from './knowledge.queue';
 
 @Processor(KNOWLEDGE_QUEUE)
 export class KnowledgeProcessor extends WorkerHost {
-  constructor(private readonly knowledge: KnowledgeService) { super(); }
+  constructor(private readonly knowledge: KnowledgeService) {
+    super();
+  }
 
-  async process(job: Job<KnowledgeIndexJob>) { await this.knowledge.index(job.data.sourceId); }
+  async process(job: Job<KnowledgeIndexJob>) {
+    await this.knowledge.index(job.data.sourceId);
+  }
 
   @OnWorkerEvent('failed')
   onFailed(job: Job<KnowledgeIndexJob> | undefined) {
-    if (job) console.error(`Knowledge indexing failed for source ${job.data.sourceId}`);
+    if (job)
+      console.error(
+        `Knowledge indexing failed for source ${job.data.sourceId}`,
+      );
   }
 }
