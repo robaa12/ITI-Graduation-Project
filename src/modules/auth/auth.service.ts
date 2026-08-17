@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { Auth, createAuth } from './lib/auth';
 import type { AuthenticatedUser } from './auth.types';
+import { UserRole } from './auth.constants';
 
 @Injectable()
 export class AuthService {
@@ -39,7 +40,22 @@ export class AuthService {
       return null;
     }
 
-    return { user: session.user };
+    // Fetch the user from the database to include the 'role' field
+    const dbUser = await this.prismaService.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, role: true },
+    });
+
+    return {
+      user: {
+        id: session.user.id,
+        email: session.user.email,
+        name: session.user.name,
+        emailVerified: session.user.emailVerified,
+        image: session.user.image,
+        role: dbUser?.role || UserRole.USER,
+      },
+    };
   }
 
   /**
