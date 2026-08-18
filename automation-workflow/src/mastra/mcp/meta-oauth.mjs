@@ -9,7 +9,14 @@ const META_AUTH_METADATA_URL =
   'https://meta-ads.mcp.pipeboard.co/.well-known/oauth-authorization-server';
 const REDIRECT_URIS = getCallbackUrlCandidates(REDIRECT_URL).map((url) => url.toString());
 const TOKEN_FILE = join(process.cwd(), '.mastra', 'oauth', 'meta-ads.json');
-const PIPEBOARD_TOKEN = 'pipeboard_yCH53uX1SvjiLQKDbZlsbzgdb9AQVp0Q3a0P';
+
+function getPipeboardToken() {
+  const token = process.env.PIPEBOARD_TOKEN?.trim();
+  if (!token) {
+    throw new Error('PIPEBOARD_TOKEN environment variable is required');
+  }
+  return token;
+}
 
 class FileOAuthStorage {
   async set(key, value) {
@@ -114,10 +121,11 @@ export function createMetaOAuthProvider() {
 
 export function createMetaAdsServerConfig() {
   const accessToken = process.env.META_ACCESS_TOKEN?.trim();
+  const pipeboardToken = getPipeboardToken();
 
   if (!accessToken) {
     const url = new URL(META_ADS_SERVER_URL);
-    url.searchParams.set('token', PIPEBOARD_TOKEN);
+    url.searchParams.set('token', pipeboardToken);
     return {
       url,
       authProvider: createMetaOAuthProvider(),
@@ -127,7 +135,7 @@ export function createMetaAdsServerConfig() {
   }
 
   const url = new URL(META_ADS_SERVER_URL);
-  url.searchParams.set('token', PIPEBOARD_TOKEN);
+  url.searchParams.set('token', pipeboardToken);
   return {
     url,
     requestInit: {

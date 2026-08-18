@@ -29,7 +29,7 @@ const metaAdsTools = Object.fromEntries(
   Object.entries(mcpTools)
     .filter(([name]) => (META_ADS_TOOLS as readonly string[]).includes(name))
     .map(([name, tool]) => {
-      const mcpTool = tool as McpTool;
+      const mcpTool = tool as McpTool & { execute: (input: unknown, context?: unknown) => Promise<unknown> };
       const id = (mcpTool.id as string) ?? name;
       return [
         name,
@@ -37,9 +37,9 @@ const metaAdsTools = Object.fromEntries(
           id,
           description: mcpTool.description,
           inputSchema: mcpTool.inputSchema,
-          execute: async (input) => {
+          execute: async (input, context) => {
             console.log(`\n[LIVE] Calling ${name} with:`, JSON.stringify(input, null, 2));
-            const result = await mcpTool.execute(input ?? {});
+            const result = await mcpTool.execute(input ?? {}, context);
             console.log(`[LIVE] ${name} result:`, JSON.stringify(result, null, 2));
             return result;
           },
