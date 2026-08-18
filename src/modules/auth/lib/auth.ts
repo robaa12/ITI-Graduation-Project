@@ -29,6 +29,19 @@ export const createAuth = (
       provider: 'postgresql',
     }),
 
+    // Keep authorization data in the public session user payload. The value is
+    // read from Prisma and cannot be supplied by sign-up requests.
+    user: {
+      additionalFields: {
+        role: {
+          type: 'string',
+          required: false,
+          defaultValue: 'USER',
+          input: false,
+        },
+      },
+    },
+
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: true,

@@ -22,6 +22,7 @@ model User {
   generationCreditPeriodEnd   DateTime?
   sessions                    Session[]
   accounts                    Account[]
+  role                        UserRole                @default(USER)
   projects                    Project[]
   socialConnections           SocialConnection[]
   metaOAuthStates             MetaOAuthState[]
@@ -260,6 +261,11 @@ enum SubscriptionStatus {
 enum BillingInterval {
   MONTHLY
   YEARLY
+}
+
+enum UserRole {
+  USER
+  ADMIN
 }
 
 enum ProjectStatus {

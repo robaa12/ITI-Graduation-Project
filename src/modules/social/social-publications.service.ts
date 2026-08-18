@@ -232,6 +232,18 @@ export class SocialPublicationsService {
 
   async cancel(userId: string, id: string): Promise<SocialPublication> {
     const publication = await this.findOwnedOrFail(userId, id);
+    return this.cancelPublication(publication);
+  }
+
+  /** Admin variant: cancel a publication regardless of project ownership. */
+  async adminCancel(id: string): Promise<SocialPublication> {
+    const publication = await this.findPublicationOrFail(id);
+    return this.cancelPublication(publication);
+  }
+
+  private async cancelPublication(
+    publication: SocialPublication,
+  ): Promise<SocialPublication> {
     if (
       publication.status !== SocialPublicationStatus.QUEUED &&
       publication.status !== SocialPublicationStatus.SCHEDULED
@@ -241,7 +253,7 @@ export class SocialPublicationsService {
       );
     }
     return this.prisma.socialPublication.update({
-      where: { id },
+      where: { id: publication.id },
       data: {
         status: SocialPublicationStatus.CANCELLED,
         error: null,
@@ -279,6 +291,47 @@ export class SocialPublicationsService {
       );
     }
     return updated;
+  }
+
+  /**
+   * Admin variant: edits the caption of a publication regardless of project
+   * ownership. Only pre-publish (QUEUED/SCHEDULED) and FAILED publications can
+   * be edited: the queue worker reads the caption from the row when the job
+   * fires, so an edit before publishing is picked up, while already published,
+   * in-flight, or cancelled records are immutable.
+   */
+  async adminUpdateCaption(
+    id: string,
+    caption: string,
+  ): Promise<SocialPublication> {
+    const publication = await this.findPublicationOrFail(id);
+    if (
+      publication.status !== SocialPublicationStatus.QUEUED &&
+      publication.status !== SocialPublicationStatus.SCHEDULED &&
+      publication.status !== SocialPublicationStatus.FAILED
+    ) {
+      throw new ConflictException(
+        `A ${publication.status} publication cannot be edited`,
+      );
+    }
+    const trimmed = caption.trim();
+    if (!trimmed) {
+      throw new BadRequestException('Caption cannot be empty');
+    }
+    return this.prisma.socialPublication.update({
+      where: { id },
+      data: { caption: trimmed },
+    });
+  }
+
+  private async findPublicationOrFail(id: string) {
+    const publication = await this.prisma.socialPublication.findUnique({
+      where: { id },
+    });
+    if (!publication) {
+      throw new NotFoundException(`Social publication ${id} not found`);
+    }
+    return publication;
   }
 
   private enqueue(publication: SocialPublication): Promise<unknown> {

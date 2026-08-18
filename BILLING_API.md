@@ -60,25 +60,25 @@ rather than keeping its own copy.
     "sortOrder": 1,
     "priceMonthlyCents": 0,
     "priceYearlyCents": 0,
-    "generationCredits": 6
+    "generationCredits": 4
   },
   {
     "code": "pro",
     "name": "Pro",
     "description": "For individual professionals who need more.",
     "sortOrder": 2,
-    "priceMonthlyCents": 1500,
-    "priceYearlyCents": 15000,
-    "generationCredits": 60
+    "priceMonthlyCents": 2500,
+    "priceYearlyCents": 25000,
+    "generationCredits": 40
   },
   {
     "code": "business",
     "name": "Business",
     "description": "For growing teams.",
     "sortOrder": 3,
-    "priceMonthlyCents": 4000,
-    "priceYearlyCents": 40000,
-    "generationCredits": 240
+    "priceMonthlyCents": 5000,
+    "priceYearlyCents": 50000,
+    "generationCredits": 100
   }
 ]
 ```
@@ -226,10 +226,10 @@ between the two.
     "newPlanChargeCents": 1333
   },
   "credits": {
-    "limit": 60,
-    "used": 55,
-    "newLimit": 240,
-    "newRemaining": 185,
+    "limit": 40,
+    "used": 35,
+    "newLimit": 100,
+    "newRemaining": 65,
     "periodEnd": "2026-09-12T10:00:00.000Z"
   }
 }
@@ -238,7 +238,7 @@ between the two.
 `kind` is `UPGRADE`, `DOWNGRADE`, or `NOOP` (already on that plan and interval,
 in which case `quoteId` is `null`). `breakdown` explains the total instead of
 asserting it. `credits` projects the allowance so the confirmation screen can say
-"you have used 55 of 60; upgrading leaves you 185 of 240" — credits already spent
+"you have used 35 of 40; upgrading leaves you 65 of 100" — credits already spent
 stay spent.
 
 A downgrade quotes `amountDueCents: 0` with `effectiveAt` set to the end of the
@@ -425,9 +425,9 @@ INSERT INTO "plan"
    "priceMonthlyCents", "priceYearlyCents", "generationCredits", "updatedAt")
 VALUES
   (gen_random_uuid()::text, 'pro', 'Pro', 'For individuals', 2, true,
-   'prod_...', 'price_...monthly', 'price_...yearly', 1500, 15000, 60, now()),
+   'prod_...', 'price_...monthly', 'price_...yearly', 2500, 25000, 40, now()),
   (gen_random_uuid()::text, 'business', 'Business', 'For teams', 3, true,
-   'prod_...', 'price_...monthly', 'price_...yearly', 4000, 40000, 240, now());
+   'prod_...', 'price_...monthly', 'price_...yearly', 5000, 50000, 100, now());
 ```
 
 ### 4. Webhook signing secret
@@ -510,10 +510,10 @@ Each `stripe trigger` emits a realistic payload that the local forwarder signs a
 1. **Checkout**: open the URL returned by `POST /api/subscriptions/checkout` (a test card — e.g. `4242 4242 4242 4242` — is accepted automatically), complete, and watch the webhook flip the DB row from `INCOMPLETE` to `ACTIVE`.
 2. **Upgrade with credits already spent** — the case worth checking by hand:
    subscribe to Pro, spend most of the allowance (run generations, or set
-   `user.generationCreditsUsed` directly) so `/usage` reads `55` of `60`, then
+   `user.generationCreditsUsed` directly) so `/usage` reads `35` of `40`, then
    upgrade to Business. Confirm the checkout page shows the breakdown *and* the
-   projection, pay, then verify `/usage` reads `limit 240`, `used 55`,
-   `remaining 185`, with `generationCreditPeriodEnd` **unchanged**. Re-delivering
+   projection, pay, then verify `/usage` reads `limit 100`, `used 35`,
+   `remaining 65`, with `generationCreditPeriodEnd` **unchanged**. Re-delivering
    the same event (`stripe events resend <id>`) must not move any of it.
 3. **Downgrade**: `PATCH /api/subscriptions/plan` to a lower plan. Nothing is
    charged, `/me` reports `pendingPlan` and `pendingEffectiveAt`, and the current

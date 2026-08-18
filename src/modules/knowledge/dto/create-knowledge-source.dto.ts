@@ -1,4 +1,11 @@
-import { IsIn, IsOptional, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CreateWebsiteSourceDto {
   @IsUrl({ require_tld: false })

@@ -6,7 +6,8 @@ export const STRATEGY_REVISION_SECTIONS = [
   'smartObjectives',
 ] as const;
 
-export type StrategyRevisionSection = (typeof STRATEGY_REVISION_SECTIONS)[number];
+export type StrategyRevisionSection =
+  (typeof STRATEGY_REVISION_SECTIONS)[number];
 
 export class RegenerateStrategySectionDto {
   @IsIn(STRATEGY_REVISION_SECTIONS)
