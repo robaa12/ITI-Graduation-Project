@@ -20,9 +20,18 @@ test('recognizes only Meta-owned campaign channels', () => {
 });
 
 test('renders valid objective and channel rules into the agent prompt', () => {
-  const prompt = buildSystemPrompt('file:///workspace/');
+  const previousAccountId = process.env.META_AD_ACCOUNT_ID;
+  process.env.META_AD_ACCOUNT_ID = 'act_123456789012345';
 
-  assert.match(prompt, /conversion or retargeting → OUTCOME_SALES/);
-  assert.doesNotMatch(prompt, /OUTCOME_PURCHASE/);
-  assert.match(prompt, /YouTube is not a Meta channel/);
+  try {
+    const prompt = buildSystemPrompt('file:///workspace/');
+
+    assert.match(prompt, /conversion or retargeting → OUTCOME_SALES/);
+    assert.doesNotMatch(prompt, /OUTCOME_PURCHASE/);
+    assert.match(prompt, /YouTube is not a Meta channel/);
+    assert.match(prompt, /act_123456789012345/);
+  } finally {
+    if (previousAccountId === undefined) delete process.env.META_AD_ACCOUNT_ID;
+    else process.env.META_AD_ACCOUNT_ID = previousAccountId;
+  }
 });

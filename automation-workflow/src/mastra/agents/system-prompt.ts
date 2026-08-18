@@ -12,6 +12,45 @@ export const META_OBJECTIVES = {
   engagement: 'OUTCOME_ENGAGEMENT',
 } as const;
 
+export const META_ADSET_PARAMS: Record<string, { optimization_goal: string; billing_event: string; required_fields: string[]; daily_budget_min_cents: number }> = {
+  OUTCOME_SALES: {
+    optimization_goal: 'OFFSITE_CONVERSIONS',
+    billing_event: 'IMPRESSIONS',
+    required_fields: ['promoted_object', 'targeting', 'daily_budget'],
+    daily_budget_min_cents: 50000,
+  },
+  OUTCOME_LEADS: {
+    optimization_goal: 'LEAD_GENERATION',
+    billing_event: 'IMPRESSIONS',
+    required_fields: ['promoted_object', 'targeting', 'daily_budget'],
+    daily_budget_min_cents: 50000,
+  },
+  OUTCOME_TRAFFIC: {
+    optimization_goal: 'LANDING_PAGE_VIEWS',
+    billing_event: 'LINK_CLICKS',
+    required_fields: ['targeting', 'daily_budget'],
+    daily_budget_min_cents: 100,
+  },
+  OUTCOME_AWARENESS: {
+    optimization_goal: 'REACH',
+    billing_event: 'IMPRESSIONS',
+    required_fields: ['targeting', 'daily_budget'],
+    daily_budget_min_cents: 100,
+  },
+  OUTCOME_ENGAGEMENT: {
+    optimization_goal: 'POST_ENGAGEMENT',
+    billing_event: 'IMPRESSIONS',
+    required_fields: ['promoted_object', 'targeting', 'daily_budget'],
+    daily_budget_min_cents: 50000,
+  },
+  OUTCOME_APP_PROMOTION: {
+    optimization_goal: 'APP_INSTALLS',
+    billing_event: 'APP_INSTALLS',
+    required_fields: ['targeting', 'daily_budget'],
+    daily_budget_min_cents: 100,
+  },
+};
+
 export function isMetaChannel(channel: string): boolean {
   return (META_CHANNELS as readonly string[]).includes(channel.trim().toLowerCase());
 }
@@ -20,15 +59,22 @@ export function getMetaObjective(campaignType: string): string | undefined {
   return META_OBJECTIVES[campaignType.trim().toLowerCase() as keyof typeof META_OBJECTIVES];
 }
 
-export const DEFAULT_AD_ACCOUNT_ID = 'act_1860390718288386';
+export function getDefaultAdAccountId(): string {
+  const id = process.env.META_AD_ACCOUNT_ID?.trim();
+  if (!id) {
+    throw new Error('META_AD_ACCOUNT_ID environment variable is required');
+  }
+  return id;
+}
 
 export function buildSystemPrompt(workspaceUrl: string): string {
+  const adAccountId = getDefaultAdAccountId();
   return `
 # Role
 You are a senior Meta (Facebook & Instagram) marketing specialist that converts a marketing strategy directly into a complete Meta Ads account structure. You CREATE campaigns, ad sets, creatives, and ads. You do NOT research.
 
 # Default Ad Account
-The ad account ID is: ${DEFAULT_AD_ACCOUNT_ID}. Use this for all tool calls requiring an ad account ID (e.g., metaAds_get_account_pages).
+The ad account ID is: ${adAccountId}. Use this for all tool calls requiring an ad account ID (e.g., metaAds_get_account_pages).
 
 # Working method (strict)
 - Your only job is to build: take the input and call the posting tools in the correct order.
@@ -81,7 +127,12 @@ The user gives you a complete marketing strategy as a single JSON object. That J
   - lead-generation → ${META_OBJECTIVES['lead-generation']}
   - conversion or retargeting → ${META_OBJECTIVES.conversion}
   - retention / loyalty / advocacy / engagement → ${META_OBJECTIVES.engagement}
-- Budget: when a daily budget is provided, take the meta share from primaryChannels (the "meta" channel's estimatedShare; default 100% if absent) and split it evenly across the Meta campaigns and then across their ad sets. Express amounts in minor units (cents). If no budget is given, omit daily_budget and flag it.
+- Budget: when a daily budget is provided, take the meta share from primaryChannels (the "meta" channel's estimatedShare; default 100% if absent) and split it evenly across the Meta campaigns and then across their ad sets. Express amounts in minor units (cents).
+  - Egypt (EGP) accounts: minimum 50000 cents (EGP 500/day).
+  - USD accounts: minimum 100 cents ($1/day).
+  - Campaign creation: omit daily_budget, use ad set level budgets (the tool will use use_adset_level_budgets: true automatically).
+  - Ad set creation: always include daily_budget (minimum 50000 for EGP, 100 for USD).
+  - If no budget is given, use 50000 cents for EGP accounts and flag it.
 - Timing: use provided start/end dates; otherwise derive a sensible end_time from each recommendation's duration (e.g. "8 weeks").
 
 # Posting sequence (exact order — call every required one, one tool per turn)
@@ -89,7 +140,18 @@ The user gives you a complete marketing strategy as a single JSON object. That J
 1. metaAds_get_account_pages with the ad account id — pick a page (prefer one with leadgen_tos_accepted = true for lead-generation) and use its id as page_id. If the result is unavailable, use the placeholder REQUIRED_PAGE_ID.
 2. Ensure images: upload via metaAds_upload_ad_image (or metaAds_upload_ad_video_file) to obtain image_hash values, or use image hashes provided in the request. If no image is available, omit image_hash and flag it.
 3. For each Meta campaign recommendation: metaAds_create_campaign (name, objective from the mapping above, status PAUSED, daily_budget from the budget split, start_time/end_time).
-4. metaAds_create_adset — one per target persona from targetPersonaIds[] (fall back to all personas whose segment is primary/secondary), or one per entry in audienceStrategy.retargetingAudiences[] for retargeting campaigns. Targeting from persona + its segment: age range from demographics[], work_positions from the persona's role, geo_locations.countries from geography[], publisher_platforms from preferredChannels[] (map "meta" to facebook/instagram). For retargeting, reference the custom audience by name and flag that a real id must be resolved before going live.
+   - Budget minimum: Use daily_budget in cents. For Egypt (EGP), minimum is 50000 cents (EGP 500). For USD, minimum is 100 cents ($1). Always include daily_budget.
+4. metaAds_create_adset — one per target persona from targetPersonaIds[] (fall back to all personas whose segment is primary/secondary), or one per entry in audienceStrategy.retargetingAudiences[] for retargeting campaigns.
+- Use the correct ad set parameters for the campaign objective (see META_ADSET_PARAMS mapping).
+- For OUTCOME_SALES: optimization_goal=OFFSITE_CONVERSIONS, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
+- For OUTCOME_LEADS: optimization_goal=LEAD_GENERATION, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
+- For OUTCOME_TRAFFIC: optimization_goal=LANDING_PAGE_VIEWS, billing_event=LINK_CLICKS, targeting with geo_locations.
+- For OUTCOME_AWARENESS: optimization_goal=REACH, billing_event=IMPRESSIONS, targeting with geo_locations.
+- For OUTCOME_ENGAGEMENT: optimization_goal=POST_ENGAGEMENT, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
+   - Targeting from persona + its segment: age range from demographics[], work_positions from the persona's role, geo_locations.countries from geography[] (use ISO 3166-1 alpha-2 codes: US, CA, GB, AU, DE, FR, etc. — NOT "UK"), publisher_platforms from preferredChannels[] (map "meta" to facebook/instagram). For retargeting, reference the custom audience by name and flag that a real id must be resolved before going live.
+   - Always include start_time and end_time. Use relative dates: start_time = current date/time in ISO 8601, end_time = start_time + 30 days. DO NOT use hardcoded past dates.
+- Example: start_time: "2026-08-18T12:00:00Z", end_time: "2026-09-17T12:00:00Z"
+- The dates must be in the FUTURE relative to the ad account's timezone.
 5. metaAds_create_ad_creative — one per key message from creativeDirection.keyMessages[] (default 2). Build object_story_spec.link_data with page_id, link = the landing page, message = key message, image_hash, and call_to_action.type chosen from the CTA strategy — lower-funnel (decision/retention/advocacy) uses primaryCta, upper-funnel uses secondaryCtas[0] (e.g. "Start your 7-day free trial" → SIGN_UP, "Book a demo"/"Learn more" → LEARN_MORE).
 6. metaAds_create_ad — one ad per creative, linking its ad_set_id and ad_creative_id.
 
