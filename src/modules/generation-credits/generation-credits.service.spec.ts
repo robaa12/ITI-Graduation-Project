@@ -20,6 +20,8 @@ describe('GenerationCreditsService', () => {
           generationCredits: 4,
           maxCampaignWeeks: 1,
           maxPostsPerWeek: 3,
+          maxPlatforms: 1,
+          allowsImageGeneration: false,
         }),
       },
       user: {
@@ -56,7 +58,7 @@ describe('GenerationCreditsService', () => {
       canGenerate: true,
     });
     expect(tx.user.updateMany).toHaveBeenCalledWith({
-      where: { id: 'user-1', generationCreditsUsed: { lt: 4 } },
+      where: { id: 'user-1', generationCreditsUsed: { lte: 3 } },
       data: { generationCreditsUsed: { increment: 1 } },
     });
     expect(tx.generationCreditEvent.create).toHaveBeenCalledWith({
@@ -64,6 +66,7 @@ describe('GenerationCreditsService', () => {
         userId: 'user-1',
         referenceId: 'strategy:run-1',
         kind: GenerationCreditKind.STRATEGY,
+        amount: 1,
         periodStart,
       },
     });
@@ -127,6 +130,8 @@ describe('GenerationCreditsService', () => {
           generationCredits: 40,
           maxCampaignWeeks: 3,
           maxPostsPerWeek: 6,
+          maxPlatforms: 3,
+          allowsImageGeneration: true,
         },
       },
     });
@@ -140,6 +145,128 @@ describe('GenerationCreditsService', () => {
       ),
     ).rejects.toMatchObject({ status: 402 });
     expect(tx.user.updateMany).not.toHaveBeenCalled();
+  });
+
+  describe('multi-credit reservations', () => {
+    it('reserves one credit per post a content run will produce', async () => {
+      const usage = await service.consumeInTransaction(
+        tx,
+        'user-1',
+        GenerationCreditKind.CONTENT_WORKFLOW,
+        'content-workflow:run-3',
+        3,
+      );
+
+      expect(usage).toMatchObject({ limit: 4, used: 3, remaining: 1 });
+      expect(tx.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'user-1', generationCreditsUsed: { lte: 1 } },
+        data: { generationCreditsUsed: { increment: 3 } },
+      });
+      expect(tx.generationCreditEvent.create).toHaveBeenCalledWith({
+        data: {
+          userId: 'user-1',
+          referenceId: 'content-workflow:run-3',
+          kind: GenerationCreditKind.CONTENT_WORKFLOW,
+          amount: 3,
+          periodStart,
+        },
+      });
+    });
+
+    it('spends the balance exactly and reports it as spent', async () => {
+      const usage = await service.consumeInTransaction(
+        tx,
+        'user-1',
+        GenerationCreditKind.CONTENT_WORKFLOW,
+        'content-workflow:run-4',
+        4,
+      );
+
+      expect(usage).toMatchObject({
+        used: 4,
+        remaining: 0,
+        canGenerate: false,
+        blockedReason: 'credits_exhausted',
+      });
+    });
+
+    // Half a campaign is not something the pipeline can deliver, so a partial
+    // balance has to refuse rather than generate as far as the credits reach.
+    it('reserves nothing when the balance cannot cover the whole run', async () => {
+      tx.user.findUnique.mockResolvedValue(freeUser(2));
+
+      await expect(
+        service.consumeInTransaction(
+          tx,
+          'user-1',
+          GenerationCreditKind.CONTENT_WORKFLOW,
+          'content-workflow:too-big',
+          3,
+        ),
+      ).rejects.toMatchObject({ status: 402 });
+
+      expect(tx.user.updateMany).not.toHaveBeenCalled();
+      expect(tx.generationCreditEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('reports how many credits the refused run needed', async () => {
+      tx.user.findUnique.mockResolvedValue(freeUser(2));
+
+      try {
+        await service.consumeInTransaction(
+          tx,
+          'user-1',
+          GenerationCreditKind.CONTENT_WORKFLOW,
+          'content-workflow:too-big-2',
+          3,
+        );
+        throw new Error('expected a 402');
+      } catch (error) {
+        const response = (error as HttpException).getResponse() as Record<
+          string,
+          unknown
+        >;
+        expect(response).toMatchObject({
+          code: 'GENERATION_CREDITS_EXHAUSTED',
+          required: 3,
+        });
+        expect(response.message).toContain('needs 3 credits');
+        expect(response.message).toContain('you have 2 left');
+      }
+    });
+
+    it('refunds the whole reservation, not a single credit', async () => {
+      tx.generationCreditEvent.findUnique.mockResolvedValue({
+        id: 'event-1',
+        userId: 'user-1',
+        amount: 12,
+        periodStart,
+        refundedAt: null,
+      });
+      tx.user.findUnique.mockResolvedValue({
+        generationCreditsUsed: 12,
+        generationCreditPeriodStart: periodStart,
+      });
+
+      await service.refund('content-workflow:cancelled');
+
+      expect(tx.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { generationCreditsUsed: { decrement: 12 } },
+      });
+    });
+
+    it.each([0, -1, 1.5])('refuses a nonsensical amount', async (amount) => {
+      await expect(
+        service.consumeInTransaction(
+          tx,
+          'user-1',
+          GenerationCreditKind.CONTENT_WORKFLOW,
+          `content-workflow:bad-${amount}`,
+          amount,
+        ),
+      ).rejects.toThrow('whole number of credits');
+    });
   });
 
   describe('mid-period plan changes', () => {
@@ -282,14 +409,18 @@ describe('GenerationCreditsService', () => {
     generationCredits: 40,
     maxCampaignWeeks: 3,
     maxPostsPerWeek: 6,
+    maxPlatforms: 3,
+    allowsImageGeneration: true,
   };
   const BUSINESS_PLAN = {
     code: 'business',
     name: 'Business',
     active: true,
     generationCredits: 240,
-    maxCampaignWeeks: null,
-    maxPostsPerWeek: null,
+    maxCampaignWeeks: 4,
+    maxPostsPerWeek: 20,
+    maxPlatforms: 6,
+    allowsImageGeneration: true,
   };
 
   function pro(used: number) {

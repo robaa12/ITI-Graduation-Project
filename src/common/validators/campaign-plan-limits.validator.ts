@@ -1,18 +1,23 @@
 import { BadRequestException } from '@nestjs/common';
 
+import { durationInWeeks, formatWeeks } from '../campaign-duration';
+
 export type CampaignPlanLimits = {
   code: string;
   name: string;
   maxCampaignWeeks: number | null;
   maxPostsPerWeek: number | null;
+  maxPlatforms: number | null;
 };
-
-const DAYS_PER_WEEK = 7;
-const WEEKS_PER_MONTH = 4;
 
 /**
  * Enforces subscription entitlements at the API boundary. The frontend mirrors
  * these limits for a friendly picker, but this check remains authoritative.
+ *
+ * All three caps shape one campaign, and they multiply: the pipeline generates
+ * `weeks * postsPerWeek * platforms` posts. Capping duration and cadence while
+ * leaving platforms open would let a plan's real output grow sixfold, so
+ * `maxPlatforms` belongs here rather than being left to the picker.
  */
 export function validateCampaignPlanLimits(
   input: Record<string, unknown>,
@@ -41,31 +46,14 @@ export function validateCampaignPlanLimits(
       `${plan.name} supports up to ${plan.maxPostsPerWeek} posts per week. Upgrade your plan to create more posts.`,
     );
   }
-}
 
-function durationInWeeks(value: unknown): number | null {
-  if (typeof value !== 'string') return null;
-  const match = value
-    .trim()
-    .toLowerCase()
-    .match(/^(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months)$/);
-  if (!match) return null;
-
-  const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-
-  switch (match[2]) {
-    case 'day':
-    case 'days':
-      return amount / DAYS_PER_WEEK;
-    case 'month':
-    case 'months':
-      return amount * WEEKS_PER_MONTH;
-    default:
-      return amount;
+  if (
+    plan.maxPlatforms !== null &&
+    Array.isArray(input.platforms) &&
+    input.platforms.length > plan.maxPlatforms
+  ) {
+    throw new BadRequestException(
+      `${plan.name} supports up to ${plan.maxPlatforms} ${plan.maxPlatforms === 1 ? 'platform' : 'platforms'} per campaign. Upgrade your plan to publish to more.`,
+    );
   }
-}
-
-function formatWeeks(weeks: number): string {
-  return `${weeks} ${weeks === 1 ? 'week' : 'weeks'}`;
 }

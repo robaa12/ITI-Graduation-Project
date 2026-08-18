@@ -20,6 +20,7 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 
+import { validateCampaignPlanLimits } from '../../common/validators/campaign-plan-limits.validator';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -98,6 +99,13 @@ export class StrategyService {
         `Workflow input must serialise to at most ${MAX_WORKFLOW_INPUT_BYTES} bytes`,
       );
     }
+
+    // Checked here as well as at content-run start. The brief already carries
+    // the campaign shape, so refusing now costs the user nothing; letting it
+    // through would spend a strategy credit on a campaign their plan can never
+    // turn into posts.
+    const creditUsage = await this.generationCredits.getUsage(userId);
+    validateCampaignPlanLimits(authoritativeInput, creditUsage.plan);
 
     // Written before the worker contacts Mastra so any startup failure is
     // recorded against a row the client can actually inspect.

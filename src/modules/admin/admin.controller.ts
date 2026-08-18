@@ -69,8 +69,12 @@ export class AdminController {
   }
 
   @Patch('users/:id')
-  async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return this.adminService.updateUser(id, dto);
+  async updateUser(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+    @CurrentUser() currentUser: AuthenticatedUser,
+  ) {
+    return this.adminService.updateUser(id, dto, currentUser.id);
   }
 
   @Patch('users/:id/role')

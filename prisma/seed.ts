@@ -25,6 +25,8 @@ type PlanSeed = {
   generationCredits: number;
   maxCampaignWeeks?: number;
   maxPostsPerWeek?: number;
+  maxPlatforms?: number;
+  allowsImageGeneration: boolean;
 };
 
 const PLANS: PlanSeed[] = [
@@ -38,6 +40,10 @@ const PLANS: PlanSeed[] = [
     generationCredits: 4,
     maxCampaignWeeks: 1,
     maxPostsPerWeek: 3,
+    maxPlatforms: 1,
+    // Images cost ~12x what a post's text costs, so the free tier stays
+    // text-only. This is what the pricing page has always advertised.
+    allowsImageGeneration: false,
   },
   {
     code: 'pro',
@@ -49,6 +55,8 @@ const PLANS: PlanSeed[] = [
     generationCredits: 40,
     maxCampaignWeeks: 3,
     maxPostsPerWeek: 6,
+    maxPlatforms: 3,
+    allowsImageGeneration: true,
   },
   {
     code: 'business',
@@ -58,6 +66,10 @@ const PLANS: PlanSeed[] = [
     priceMonthlyCents: 5000,
     priceYearlyCents: 50000,
     generationCredits: 100,
+    maxCampaignWeeks: 4,
+    maxPostsPerWeek: 20,
+    maxPlatforms: 6,
+    allowsImageGeneration: true,
   },
 ];
 
@@ -146,6 +158,8 @@ async function main() {
           generationCredits: plan.generationCredits,
           maxCampaignWeeks: plan.maxCampaignWeeks ?? null,
           maxPostsPerWeek: plan.maxPostsPerWeek ?? null,
+          maxPlatforms: plan.maxPlatforms ?? null,
+          allowsImageGeneration: plan.allowsImageGeneration,
         },
         create: {
           code: plan.code,
@@ -161,6 +175,8 @@ async function main() {
           generationCredits: plan.generationCredits,
           maxCampaignWeeks: plan.maxCampaignWeeks ?? null,
           maxPostsPerWeek: plan.maxPostsPerWeek ?? null,
+          maxPlatforms: plan.maxPlatforms ?? null,
+          allowsImageGeneration: plan.allowsImageGeneration,
         },
       });
       console.log(`Seeded plan "${plan.code}"`);

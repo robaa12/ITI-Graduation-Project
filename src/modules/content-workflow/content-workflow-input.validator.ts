@@ -40,33 +40,33 @@ export function validateContentWorkflowInput(
     throw new BadRequestException('campaignStrategy must be an object');
   }
 
+  // `platforms`, `duration` and `postsPerWeek` are required rather than
+  // optional. The pipeline would happily derive them from the strategy, but
+  // they are exactly the three numbers that decide how many posts — and so how
+  // many credits — a run costs, and a run whose size is unknown cannot be
+  // priced honestly.
   const platforms = input.platforms;
   if (
-    platforms !== undefined &&
-    (!Array.isArray(platforms) ||
-      platforms.length === 0 ||
-      platforms.some(
-        (platform) =>
-          typeof platform !== 'string' || !SOCIAL_PLATFORMS.has(platform),
-      ))
+    !Array.isArray(platforms) ||
+    platforms.length === 0 ||
+    platforms.some(
+      (platform) =>
+        typeof platform !== 'string' || !SOCIAL_PLATFORMS.has(platform),
+    )
   ) {
     throw new BadRequestException(
       'platforms must contain at least one supported social platform',
     );
   }
 
-  if (
-    input.duration !== undefined &&
-    (typeof input.duration !== 'string' || input.duration.trim().length === 0)
-  ) {
+  if (typeof input.duration !== 'string' || input.duration.trim().length === 0) {
     throw new BadRequestException('duration must be a non-empty string');
   }
 
   if (
-    input.postsPerWeek !== undefined &&
-    (!Number.isInteger(input.postsPerWeek) ||
-      Number(input.postsPerWeek) < 1 ||
-      Number(input.postsPerWeek) > 20)
+    !Number.isInteger(input.postsPerWeek) ||
+    Number(input.postsPerWeek) < 1 ||
+    Number(input.postsPerWeek) > 20
   ) {
     throw new BadRequestException(
       'postsPerWeek must be an integer between 1 and 20',

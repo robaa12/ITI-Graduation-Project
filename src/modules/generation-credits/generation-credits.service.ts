@@ -1,4 +1,9 @@
-import { HttpException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   GenerationCreditKind,
   Prisma,
@@ -13,6 +18,8 @@ export type GenerationCreditUsage = {
     name: string;
     maxCampaignWeeks: number | null;
     maxPostsPerWeek: number | null;
+    maxPlatforms: number | null;
+    allowsImageGeneration: boolean;
   };
   limit: number;
   used: number;
@@ -39,6 +46,8 @@ type CreditUser = {
       generationCredits: number;
       maxCampaignWeeks: number | null;
       maxPostsPerWeek: number | null;
+      maxPlatforms: number | null;
+      allowsImageGeneration: boolean;
     } | null;
   } | null;
 };
@@ -75,6 +84,8 @@ const CREDIT_USER_SELECT = {
           generationCredits: true,
           maxCampaignWeeks: true,
           maxPostsPerWeek: true,
+          maxPlatforms: true,
+          allowsImageGeneration: true,
         },
       },
     },
@@ -106,12 +117,25 @@ export class GenerationCreditsService {
     return this.syncAllowance(tx, userId);
   }
 
+  /**
+   * Reserves `amount` credits for one generation. A content run costs one credit
+   * per post it will produce, so this has to move the balance by more than one
+   * at a time; the whole reservation succeeds or none of it does, because half
+   * a campaign is not a thing the pipeline can deliver.
+   */
   async consumeInTransaction(
     tx: CreditTransaction,
     userId: string,
     kind: GenerationCreditKind,
     referenceId: string,
+    amount = 1,
   ): Promise<GenerationCreditUsage> {
+    if (!Number.isInteger(amount) || amount < 1) {
+      throw new BadRequestException(
+        'A generation must reserve a whole number of credits',
+      );
+    }
+
     await this.lockUser(tx, userId);
 
     const existing = await tx.generationCreditEvent.findUnique({
@@ -128,25 +152,26 @@ export class GenerationCreditsService {
         usage,
       );
     }
-    if (usage.remaining < 1) {
+    if (usage.remaining < amount) {
       this.throwUnavailable(
         'GENERATION_CREDITS_EXHAUSTED',
-        'You have used all generation credits for this period. Upgrade your plan or wait for the next reset.',
+        insufficientCreditsMessage(amount, usage.remaining),
         usage,
+        amount,
       );
     }
 
     const claimed = await tx.user.updateMany({
       where: {
         id: userId,
-        generationCreditsUsed: { lt: usage.limit },
+        generationCreditsUsed: { lte: usage.limit - amount },
       },
-      data: { generationCreditsUsed: { increment: 1 } },
+      data: { generationCreditsUsed: { increment: amount } },
     });
     if (claimed.count !== 1) {
       this.throwUnavailable(
         'GENERATION_CREDITS_EXHAUSTED',
-        'You have used all generation credits for this period. Upgrade your plan or wait for the next reset.',
+        insufficientCreditsMessage(amount, 0),
         {
           ...usage,
           used: usage.limit,
@@ -154,6 +179,7 @@ export class GenerationCreditsService {
           canGenerate: false,
           blockedReason: 'credits_exhausted',
         },
+        amount,
       );
     }
 
@@ -162,11 +188,12 @@ export class GenerationCreditsService {
         userId,
         referenceId,
         kind,
+        amount,
         periodStart: usage.periodStart,
       },
     });
 
-    const used = usage.used + 1;
+    const used = usage.used + amount;
     return {
       ...usage,
       used,
@@ -241,6 +268,8 @@ export class GenerationCreditsService {
               generationCredits: true,
               maxCampaignWeeks: true,
               maxPostsPerWeek: true,
+              maxPlatforms: true,
+              allowsImageGeneration: true,
             },
           })
         : null;
@@ -251,6 +280,8 @@ export class GenerationCreditsService {
       generationCredits: 0,
       maxCampaignWeeks: 1,
       maxPostsPerWeek: 3,
+      maxPlatforms: 1,
+      allowsImageGeneration: false,
     };
     const now = new Date();
     const periodExpired =
@@ -313,6 +344,8 @@ export class GenerationCreditsService {
         name: plan.name,
         maxCampaignWeeks: plan.maxCampaignWeeks,
         maxPostsPerWeek: plan.maxPostsPerWeek,
+        maxPlatforms: plan.maxPlatforms,
+        allowsImageGeneration: plan.allowsImageGeneration,
       },
       limit,
       used,
@@ -335,9 +368,18 @@ export class GenerationCreditsService {
     code: string,
     message: string,
     credits: GenerationCreditUsage,
+    required?: number,
   ): never {
-    throw new HttpException({ statusCode: 402, code, message, credits }, 402);
+    throw new HttpException(
+      { statusCode: 402, code, message, credits, required },
+      402,
+    );
   }
+}
+
+function insufficientCreditsMessage(required: number, remaining: number): string {
+  const cost = `${required} ${required === 1 ? 'credit' : 'credits'}`;
+  return `This generation needs ${cost} and you have ${remaining} left. Upgrade your plan, shorten the campaign, or wait for the next reset.`;
 }
 
 function addOneMonth(value: Date): Date {

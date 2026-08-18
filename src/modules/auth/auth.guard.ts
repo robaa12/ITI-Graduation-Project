@@ -25,6 +25,10 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required');
     }
 
+    if (session.user.active === false) {
+      throw new UnauthorizedException('Account inactive');
+    }
+
     request.user = session.user;
 
     return true;

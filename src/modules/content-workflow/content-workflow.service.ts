@@ -4,6 +4,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -21,6 +22,7 @@ import {
 import { Queue } from 'bullmq';
 
 import type { WorkflowTemporalContext } from '../../common/workflow-temporal-context';
+import { contentRunCreditCost } from '../../common/billing/campaign-credit-cost';
 import { jsonByteLength } from '../../common/validators/max-json-size.validator';
 import { validateCampaignPlanLimits } from '../../common/validators/campaign-plan-limits.validator';
 import { buildWorkflowTemporalContext } from '../../common/workflow-temporal-context';
@@ -41,6 +43,13 @@ import { validateContentWorkflowInput } from './content-workflow-input.validator
 import { QueryContentRunDto } from './dto/query-content-run.dto';
 
 const MAX_INPUT_BYTES = 256 * 1024;
+
+/**
+ * The pipeline's own ceiling on posts per run
+ * (`marketing-workflow-demo/src/workflows/content/workflow.ts`). Repeated here
+ * so an over-sized brief is refused before a credit is reserved for it.
+ */
+const MAX_POSTS_PER_RUN = 60;
 
 @Injectable()
 export class ContentWorkflowService {
@@ -92,12 +101,35 @@ export class ContentWorkflowService {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const input: Prisma.InputJsonObject = {
-      ...(untrustedInput as Prisma.InputJsonObject),
+    const creditUsage = await this.generationCredits.getUsage(userId);
+
+    const requested: Record<string, unknown> = {
+      ...(untrustedInput as Record<string, unknown>),
       temporalContext: { ...temporalContext },
+      // The plan decides, not the caller. A plan without images still gets its
+      // posts written; only the expensive half is withheld.
+      ...(creditUsage.plan.allowsImageGeneration
+        ? {}
+        : { generateImages: false }),
     };
 
-    validateContentWorkflowInput(input);
+    validateContentWorkflowInput(requested);
+    validateCampaignPlanLimits(requested, creditUsage.plan);
+
+    // One credit per post this run will produce. Pinning `maxPosts` to the same
+    // number keeps the pipeline's own preflight from generating a different
+    // amount of work than the one that was charged for.
+    const creditCost = contentRunCreditCost(requested);
+    if (creditCost > MAX_POSTS_PER_RUN) {
+      throw new BadRequestException(
+        `A single campaign can generate at most ${MAX_POSTS_PER_RUN} posts, and this one asks for ${creditCost}. Shorten the duration, lower posts per week, or select fewer platforms.`,
+      );
+    }
+
+    const input: Prisma.InputJsonObject = {
+      ...(requested as Prisma.InputJsonObject),
+      maxPosts: creditCost,
+    };
 
     if (jsonByteLength(input) > MAX_INPUT_BYTES) {
       throw new BadRequestException(
@@ -105,8 +137,20 @@ export class ContentWorkflowService {
       );
     }
 
-    const creditUsage = await this.generationCredits.getUsage(userId);
-    validateCampaignPlanLimits(input, creditUsage.plan);
+    // Refuse before a run row exists. `consumeInTransaction` would also catch
+    // this, but only after the campaign looks half-started to the caller.
+    if (creditUsage.remaining < creditCost) {
+      throw new HttpException(
+        {
+          statusCode: 402,
+          code: 'GENERATION_CREDITS_EXHAUSTED',
+          message: `This campaign needs ${creditCost} ${creditCost === 1 ? 'credit' : 'credits'} and you have ${creditUsage.remaining} left. Upgrade your plan, shorten the campaign, or wait for the next reset.`,
+          credits: creditUsage,
+          required: creditCost,
+        },
+        402,
+      );
+    }
 
     // The worker creates and starts this exact ID at Mastra, keeping Studio,
     // the queue job, and this database row attached to one execution.
@@ -126,6 +170,7 @@ export class ContentWorkflowService {
         userId,
         GenerationCreditKind.CONTENT_WORKFLOW,
         contentWorkflowCreditReference(runId),
+        creditCost,
       );
       await tx.workflowExecution.create({
         data: {

@@ -45,4 +45,26 @@ describe('validateContentWorkflowInput', () => {
       validateContentWorkflowInput({ ...validInput, postsPerWeek: 21 }),
     ).toThrow('postsPerWeek must be an integer between 1 and 20');
   });
+
+  // The pipeline would derive these from the strategy, but they are the three
+  // numbers that decide what a run costs, so an omission is a request to
+  // generate an unknown — and therefore unbillable — amount of work.
+  it.each(['platforms', 'duration', 'postsPerWeek'])(
+    'rejects a request that omits %s, because its size cannot be priced',
+    (field) => {
+      const { [field]: _omitted, ...withoutField } = validInput as Record<
+        string,
+        unknown
+      >;
+      expect(() => validateContentWorkflowInput(withoutField)).toThrow(
+        BadRequestException,
+      );
+    },
+  );
+
+  it('rejects an empty platform list', () => {
+    expect(() =>
+      validateContentWorkflowInput({ ...validInput, platforms: [] }),
+    ).toThrow('at least one supported social platform');
+  });
 });

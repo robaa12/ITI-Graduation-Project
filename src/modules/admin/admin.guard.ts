@@ -27,6 +27,10 @@ export class AdminGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required');
     }
 
+    if (session.user.active === false) {
+      throw new UnauthorizedException('Account inactive');
+    }
+
     if (session.user.role !== 'ADMIN') {
       throw new ForbiddenException('Admin access required');
     }

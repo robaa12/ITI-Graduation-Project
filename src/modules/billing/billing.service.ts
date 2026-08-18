@@ -217,6 +217,8 @@ export class BillingService {
         generationCredits: true,
         maxCampaignWeeks: true,
         maxPostsPerWeek: true,
+        maxPlatforms: true,
+        allowsImageGeneration: true,
       },
     });
   }

@@ -5,4 +5,5 @@ export interface AuthenticatedUser {
   emailVerified: boolean;
   image?: string | null;
   role: string;
+  active?: boolean;
 }

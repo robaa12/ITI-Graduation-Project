@@ -15,6 +15,7 @@ model User {
   image                       String?
   createdAt                   DateTime                @default(now())
   updatedAt                   DateTime                @updatedAt
+  active                      Boolean                 @default(true)
   generationCreditsUsed       Int                     @default(0)
   generationCreditLimit       Int                     @default(0)
   generationCreditPlanCode    String?
@@ -85,28 +86,35 @@ model Verification {
 /// Product/Price mapping lives here so adding a plan never requires touching
 /// application code or hardcoding Stripe IDs.
 model Plan {
-  id                   String   @id @default(uuid())
-  code                 String   @unique
-  name                 String
-  description          String?
-  sortOrder            Int      @default(0)
-  active               Boolean  @default(true)
-  stripeProductId      String
-  stripeMonthlyPriceId String?
-  stripeYearlyPriceId  String?
+  id                    String   @id @default(uuid())
+  code                  String   @unique
+  name                  String
+  description           String?
+  sortOrder             Int      @default(0)
+  active                Boolean  @default(true)
+  stripeProductId       String
+  stripeMonthlyPriceId  String?
+  stripeYearlyPriceId   String?
   // Display prices in cents (minor units) for the frontend pricing section.
   // They mirror the Stripe Prices and are the source of truth for billing.
-  priceMonthlyCents    Int?
-  priceYearlyCents     Int?
+  priceMonthlyCents     Int?
+  priceYearlyCents      Int?
   /// Fixed monthly workflow allowance. One credit starts one strategy,
   /// content workflow, focused revision, or standalone content generation.
-  generationCredits    Int      @default(0)
+  generationCredits     Int      @default(0)
   /// Optional campaign caps. Null means the plan inherits the application's
   /// full supported range rather than imposing a subscription-level limit.
-  maxCampaignWeeks     Int?
-  maxPostsPerWeek      Int?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  /// These three multiply: a run generates `weeks * postsPerWeek * platforms`
+  /// posts, so `maxPlatforms` bounds output just as hard as the other two.
+  maxCampaignWeeks      Int?
+  maxPostsPerWeek       Int?
+  maxPlatforms          Int?
+  /// Whether campaigns on this plan may generate AI images. Images cost roughly
+  /// twelve times what the text of a post costs, so this is the single biggest
+  /// lever on what a plan is worth serving.
+  allowsImageGeneration Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   subscriptions        Subscription[]
   pendingSubscriptions Subscription[]    @relation("SubscriptionPendingPlan")

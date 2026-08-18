@@ -25,4 +25,24 @@ describe('AdminGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(request.user).toMatchObject({ id: 'admin-id', role: 'ADMIN' });
   });
+
+  it('rejects an inactive admin', async () => {
+    const authService = {
+      getSession: jest.fn().mockResolvedValue({
+        user: {
+          id: 'admin-id',
+          email: 'admin@example.com',
+          name: 'Admin',
+          emailVerified: true,
+          role: 'ADMIN',
+          active: false,
+        },
+      }),
+    };
+    const guard = new AdminGuard(authService as never);
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'Account inactive',
+    );
+  });
 });

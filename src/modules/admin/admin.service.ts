@@ -274,15 +274,28 @@ export class AdminService {
     return { user, totals, projects: projectRows };
   }
 
-  async updateUser(id: string, dto: UpdateUserDto) {
+  async updateUser(id: string, dto: UpdateUserDto, actorId?: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User with ID ${id} not found`);
+
+    if (dto.active === false && actorId === id) {
+      throw new BadRequestException(
+        'Admins cannot deactivate their own account',
+      );
+    }
 
     const data: Prisma.UserUpdateInput = {};
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.image !== undefined) data.image = dto.image;
+    if (dto.active !== undefined) data.active = dto.active;
 
-    return this.prisma.user.update({ where: { id }, data });
+    const updated = await this.prisma.user.update({ where: { id }, data });
+
+    if (dto.active === false) {
+      await this.prisma.session.deleteMany({ where: { userId: id } });
+    }
+
+    return updated;
   }
 
   async updateUserRole(id: string, role: string) {

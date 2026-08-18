@@ -227,6 +227,8 @@ describe('BillingService', () => {
           generationCredits: 60,
           maxCampaignWeeks: 3,
           maxPostsPerWeek: 6,
+          maxPlatforms: 3,
+          allowsImageGeneration: true,
         },
         {
           code: 'basic',
@@ -238,6 +240,8 @@ describe('BillingService', () => {
           generationCredits: 0,
           maxCampaignWeeks: null,
           maxPostsPerWeek: null,
+          maxPlatforms: null,
+          allowsImageGeneration: true,
         },
       ];
       prisma.plan.findMany.mockResolvedValue(planRows);
@@ -256,6 +260,8 @@ describe('BillingService', () => {
           generationCredits: true,
           maxCampaignWeeks: true,
           maxPostsPerWeek: true,
+          maxPlatforms: true,
+          allowsImageGeneration: true,
         },
       });
       expect(Object.keys(planRows[0]).some((k) => k.includes('Price'))).toBe(

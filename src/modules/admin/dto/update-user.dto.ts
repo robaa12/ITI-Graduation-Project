@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateUserDto {
   @IsOptional()
@@ -10,4 +10,8 @@ export class UpdateUserDto {
   @IsString()
   @MaxLength(2_000)
   image?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 }

@@ -36,6 +36,7 @@ type PrismaMock = {
   plan: { findMany: jest.Mock; count: jest.Mock };
   planChangeQuote: { groupBy: jest.Mock };
   workflowExecution: { findMany: jest.Mock };
+  session: { deleteMany: jest.Mock };
 };
 
 describe('AdminService user management', () => {
@@ -78,6 +79,7 @@ describe('AdminService user management', () => {
             plan: { findMany: jest.fn(), count: jest.fn() },
             planChangeQuote: { groupBy: jest.fn() },
             workflowExecution: { findMany: jest.fn() },
+            session: { deleteMany: jest.fn() },
           },
         },
         {
@@ -319,6 +321,31 @@ describe('AdminService user management', () => {
         where: { id: '1' },
         data: { name: 'Bob' },
       });
+    });
+
+    it('deactivates a user and revokes all of their sessions', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: '1', active: true });
+      prisma.user.update.mockResolvedValue({ id: '1', active: false });
+      prisma.session.deleteMany.mockResolvedValue({ count: 2 });
+
+      await service.updateUser('1', { active: false }, 'admin');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: '1' },
+        data: { active: false },
+      });
+      expect(prisma.session.deleteMany).toHaveBeenCalledWith({
+        where: { userId: '1' },
+      });
+    });
+
+    it('blocks admins from deactivating their own account', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'admin', active: true });
+
+      await expect(
+        service.updateUser('admin', { active: false }, 'admin'),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 

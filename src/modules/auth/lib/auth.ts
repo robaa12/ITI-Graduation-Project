@@ -1,4 +1,4 @@
-import { betterAuth } from 'better-auth';
+import { APIError, betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { emailOTP } from 'better-auth/plugins';
 
@@ -38,6 +38,32 @@ export const createAuth = (
           required: false,
           defaultValue: 'USER',
           input: false,
+        },
+        active: {
+          type: 'boolean',
+          required: false,
+          defaultValue: true,
+          input: false,
+        },
+      },
+    },
+
+    databaseHooks: {
+      session: {
+        create: {
+          async before(session) {
+            const user = await prisma.user.findUnique({
+              where: { id: session.userId },
+              select: { active: true },
+            });
+
+            if (!user?.active) {
+              throw new APIError('FORBIDDEN', {
+                message: 'This account is inactive. Contact an administrator.',
+                code: 'ACCOUNT_INACTIVE',
+              });
+            }
+          },
         },
       },
     },
