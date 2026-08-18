@@ -5,16 +5,30 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import { UserRole } from '@prisma/client';
+import {
+  SubscriptionStatus,
+  UserRole,
+  WorkflowAccountingStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 import { AdminUsersQueryDto } from './dto/admin-users-query.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { AdminSubscriptionsQueryDto } from './dto/admin-subscriptions-query.dto';
 import { AdminPublicationsQueryDto } from './dto/admin-publications-query.dto';
 
+const FREE_FALLBACK_SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
+  SubscriptionStatus.INCOMPLETE,
+  SubscriptionStatus.INCOMPLETE_EXPIRED,
+  SubscriptionStatus.CANCELLED,
+];
+
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accounting: WorkflowAccountingService,
+  ) {}
 
   async getAdminUsers(query: AdminUsersQueryDto) {
     const { page = 1, limit = 20, search, role, sortBy, sortOrder } = query;
@@ -68,6 +82,196 @@ export class AdminService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User with ID ${id} not found`);
     return user;
+  }
+
+  async getAdminUserAnalytics(id: string) {
+    const [user, projects, executions] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          image: true,
+          role: true,
+          emailVerified: true,
+          createdAt: true,
+          generationCreditsUsed: true,
+          generationCreditLimit: true,
+          subscription: {
+            select: {
+              id: true,
+              status: true,
+              billingInterval: true,
+              currentPeriodStart: true,
+              currentPeriodEnd: true,
+              plan: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  generationCredits: true,
+                  priceMonthlyCents: true,
+                  priceYearlyCents: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      this.prisma.project.findMany({
+        where: { userId: id },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          createdAt: true,
+          _count: { select: { campaigns: true } },
+        },
+      }),
+      this.prisma.workflowExecution.findMany({
+        where: {
+          OR: [
+            { strategy: { campaign: { project: { userId: id } } } },
+            { contentRun: { campaign: { project: { userId: id } } } },
+          ],
+        },
+        include: {
+          strategy: {
+            select: { campaign: { select: { projectId: true } } },
+          },
+          contentRun: {
+            select: { campaign: { select: { projectId: true } } },
+          },
+        },
+      }),
+    ]);
+
+    if (!user) throw new NotFoundException(`User with ID ${id} not found`);
+
+    // User analytics is often the first place an administrator inspects an
+    // older execution. Reuse the bounded read-repair used by workflow detail
+    // so terminal PENDING/UNAVAILABLE records can recover usage that arrived
+    // late in Mastra observability.
+    const reconciled = await this.accounting.reconcileForPresentation(
+      executions,
+    );
+    const reconciledById = new Map(
+      reconciled.map((execution) => [execution.id, execution]),
+    );
+    const executionRows = executions.map((execution) => ({
+      ...execution,
+      ...reconciledById.get(execution.id),
+    }));
+
+    const projectUsage = new Map(
+      projects.map((project) => [
+        project.id,
+        {
+          ...project,
+          campaignCount: project._count.campaigns,
+          executionCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          estimatedCostUsd: 0,
+          pricedExecutions: 0,
+          recordedUsageExecutions: 0,
+          missingAccountingExecutions: 0,
+          lastExecutionAt: null as Date | null,
+        },
+      ]),
+    );
+
+    for (const execution of executionRows) {
+      const projectId =
+        execution.strategy?.campaign.projectId ??
+        execution.contentRun?.campaign.projectId;
+      if (!projectId) continue;
+      const usage = projectUsage.get(projectId);
+      if (!usage) continue;
+
+      usage.executionCount += 1;
+      usage.inputTokens += execution.inputTokens;
+      usage.outputTokens += execution.outputTokens;
+      usage.totalTokens += execution.totalTokens;
+      if (execution.usageCollectedAt) {
+        usage.recordedUsageExecutions += 1;
+      }
+      if (!usage.lastExecutionAt || execution.createdAt > usage.lastExecutionAt) {
+        usage.lastExecutionAt = execution.createdAt;
+      }
+
+      if (
+        execution.accountingStatus === WorkflowAccountingStatus.READY &&
+        execution.costUnit === 'USD' &&
+        execution.estimatedCost != null
+      ) {
+        usage.pricedExecutions += 1;
+        usage.estimatedCostUsd += Number(execution.estimatedCost);
+      }
+      if (
+        execution.accountingStatus === WorkflowAccountingStatus.PENDING ||
+        execution.accountingStatus === WorkflowAccountingStatus.UNAVAILABLE
+      ) {
+        usage.missingAccountingExecutions += 1;
+      }
+    }
+
+    const projectRows = [...projectUsage.values()]
+      .map(({ _count: _count, ...project }) => ({
+        ...project,
+        estimatedCostUsd: Number(project.estimatedCostUsd.toFixed(10)),
+      }))
+      .sort((left, right) => {
+        // Put useful rows first so a customer with many empty or historical
+        // projects sees their recorded token/cost data immediately.
+        if (right.totalTokens !== left.totalTokens) {
+          return right.totalTokens - left.totalTokens;
+        }
+        if (right.executionCount !== left.executionCount) {
+          return right.executionCount - left.executionCount;
+        }
+        return (
+          (right.lastExecutionAt?.getTime() ?? 0) -
+          (left.lastExecutionAt?.getTime() ?? 0)
+        );
+      });
+    const totals = projectRows.reduce(
+      (summary, project) => ({
+        projectCount: summary.projectCount + 1,
+        campaignCount: summary.campaignCount + project.campaignCount,
+        executionCount: summary.executionCount + project.executionCount,
+        inputTokens: summary.inputTokens + project.inputTokens,
+        outputTokens: summary.outputTokens + project.outputTokens,
+        totalTokens: summary.totalTokens + project.totalTokens,
+        estimatedCostUsd:
+          summary.estimatedCostUsd + project.estimatedCostUsd,
+        pricedExecutions:
+          summary.pricedExecutions + project.pricedExecutions,
+        recordedUsageExecutions:
+          summary.recordedUsageExecutions + project.recordedUsageExecutions,
+        missingAccountingExecutions:
+          summary.missingAccountingExecutions +
+          project.missingAccountingExecutions,
+      }),
+      {
+        projectCount: 0,
+        campaignCount: 0,
+        executionCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0,
+        pricedExecutions: 0,
+        recordedUsageExecutions: 0,
+        missingAccountingExecutions: 0,
+      },
+    );
+    totals.estimatedCostUsd = Number(totals.estimatedCostUsd.toFixed(10));
+
+    return { user, totals, projects: projectRows };
   }
 
   async updateUser(id: string, dto: UpdateUserDto) {
@@ -462,16 +666,24 @@ export class AdminService {
     const yearStart = new Date(now.getFullYear(), 0, 1);
     const [allTime, monthly, yearly] = await Promise.all([
       this.prisma.planChangeQuote.aggregate({
-        where: { consumedAt: { not: null } },
+        where: { consumedAt: { not: null }, amountDueCents: { gt: 0 } },
         _sum: { amountDueCents: true },
         _count: { _all: true },
       }),
       this.prisma.planChangeQuote.aggregate({
-        where: { consumedAt: { not: null }, createdAt: { gte: monthStart } },
+        where: {
+          consumedAt: { not: null },
+          amountDueCents: { gt: 0 },
+          createdAt: { gte: monthStart },
+        },
         _sum: { amountDueCents: true },
       }),
       this.prisma.planChangeQuote.aggregate({
-        where: { consumedAt: { not: null }, createdAt: { gte: yearStart } },
+        where: {
+          consumedAt: { not: null },
+          amountDueCents: { gt: 0 },
+          createdAt: { gte: yearStart },
+        },
         _sum: { amountDueCents: true },
       }),
     ]);
@@ -492,33 +704,72 @@ export class AdminService {
     const pageNum = page || 1;
     const limitNum = limit || 20;
 
-    const where = userId ? { userId } : {};
+    const userWhere: Prisma.UserWhereInput = {
+      role: UserRole.USER,
+      ...(userId ? { id: userId } : {}),
+    };
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where: userWhere,
+        orderBy: { createdAt: 'desc' },
+        take: limitNum,
+        skip: (pageNum - 1) * limitNum,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          subscription: {
+            select: {
+              status: true,
+              plan: {
+                select: { code: true, name: true, active: true },
+              },
+            },
+          },
+        },
+      }),
+      this.prisma.user.count({ where: userWhere }),
+    ]);
 
-    const events = await this.prisma.generationCreditEvent.findMany({
-      where,
-      select: { userId: true, amount: true, createdAt: true, refundedAt: true },
-      take: limitNum,
-      skip: (pageNum - 1) * limitNum,
+    const groups = users.length
+      ? await this.prisma.planChangeQuote.groupBy({
+          by: ['userId'],
+          where: {
+            userId: { in: users.map((user) => user.id) },
+            consumedAt: { not: null },
+            amountDueCents: { gt: 0 },
+          },
+          _sum: { amountDueCents: true },
+          _count: { _all: true },
+          _max: { consumedAt: true },
+        })
+      : [];
+    const paymentsByUserId = new Map(
+      groups.map((group) => [group.userId, group]),
+    );
+    const userList = users.map(({ subscription, ...user }) => {
+      const usesFreeFallback =
+        !subscription?.plan?.active ||
+        FREE_FALLBACK_SUBSCRIPTION_STATUSES.includes(subscription.status);
+      const payments = paymentsByUserId.get(user.id);
+
+      return {
+        userId: user.id,
+        user,
+        planCode: usesFreeFallback
+          ? 'free'
+          : (subscription?.plan?.code ?? 'free'),
+        planName: usesFreeFallback
+          ? 'Free'
+          : (subscription?.plan?.name ?? 'Free'),
+        subscriptionStatus: usesFreeFallback
+          ? 'FREE'
+          : (subscription?.status ?? 'FREE'),
+        totalPaid: payments?._sum.amountDueCents ?? 0,
+        paymentCount: payments?._count._all ?? 0,
+        latestPayment: payments?._max.consumedAt ?? null,
+      };
     });
-
-    const total = await this.prisma.generationCreditEvent.count({ where });
-
-    const userData: Record<string, { totalPaid: number; paymentCount: number; latestPayment: Date | null }> = {};
-    for (const event of events) {
-      const key = event.userId;
-      if (!userData[key]) {
-        userData[key] = { totalPaid: 0, paymentCount: 0, latestPayment: null };
-      }
-      if (event.refundedAt === null) {
-        userData[key].totalPaid += event.amount;
-        userData[key].paymentCount += 1;
-        if (!userData[key].latestPayment || event.createdAt > userData[key].latestPayment) {
-          userData[key].latestPayment = event.createdAt;
-        }
-      }
-    }
-
-    const userList = Object.values(userData) as Array<{ userId: string; totalPaid: number; paymentCount: number; latestPayment: Date | null }>;
 
     return {
       data: userList,
@@ -530,32 +781,98 @@ export class AdminService {
     const pageNum = page || 1;
     const limitNum = limit || 20;
 
-    const where = planId ? { planId } : {};
-
-    const subscriptions = await this.prisma.subscription.findMany({
+    const where = planId ? { id: planId } : {};
+    const plans = await this.prisma.plan.findMany({
       where,
-      include: { plan: true },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        priceMonthlyCents: true,
+        priceYearlyCents: true,
+        subscriptions: {
+          where: { status: { in: ['ACTIVE', 'TRIALING'] } },
+          select: { billingInterval: true },
+        },
+      },
+      orderBy: { sortOrder: 'asc' },
       take: limitNum,
       skip: (pageNum - 1) * limitNum,
     });
+    const total = await this.prisma.plan.count({ where });
+    const includesFreePlan = plans.some((plan) => plan.code === 'free');
+    const [paidPlanChangeGroups, implicitFreeSubscriberCount] =
+      await Promise.all([
+        this.prisma.planChangeQuote.groupBy({
+          by: ['planId'],
+          where: {
+            planId: { in: plans.map((plan) => plan.id) },
+            consumedAt: { not: null },
+            amountDueCents: { gt: 0 },
+          },
+          _sum: { amountDueCents: true },
+          _count: { _all: true },
+        }),
+        includesFreePlan
+          ? this.prisma.user.count({
+              where: {
+                role: UserRole.USER,
+                OR: [
+                  { subscription: { is: null } },
+                  { subscription: { is: { plan: { is: null } } } },
+                  {
+                    subscription: {
+                      is: { plan: { is: { active: false } } },
+                    },
+                  },
+                  {
+                    subscription: {
+                      is: {
+                        status: {
+                          in: FREE_FALLBACK_SUBSCRIPTION_STATUSES,
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            })
+          : Promise.resolve(0),
+      ]);
+    const paidChangesByPlanId = new Map(
+      paidPlanChangeGroups.map((group) => [group.planId, group]),
+    );
+    const planList = plans.map((plan) => {
+      let monthlySubscribers = 0;
+      let yearlySubscribers = 0;
+      let monthlyRecurringRevenueCents = 0;
 
-    const total = await this.prisma.subscription.count({ where });
-
-    const planData: Record<string, { planCode: string; subscriberCount: number; totalRevenue: number }> = {};
-    for (const sub of subscriptions) {
-      const planKey = sub.plan?.code;
-      if (!planKey) continue;
-      if (!planData[planKey]) {
-        planData[planKey] = { planCode: planKey, subscriberCount: 0, totalRevenue: 0 };
+      for (const subscription of plan.subscriptions) {
+        if (subscription.billingInterval === 'YEARLY') {
+          yearlySubscribers += 1;
+          monthlyRecurringRevenueCents += (plan.priceYearlyCents ?? 0) / 12;
+        } else {
+          monthlySubscribers += 1;
+          monthlyRecurringRevenueCents += plan.priceMonthlyCents ?? 0;
+        }
       }
-      planData[planKey].subscriberCount += 1;
-      const monthly = sub.plan?.priceMonthlyCents ?? 0;
-      const yearly = sub.plan?.priceYearlyCents ?? 0;
-      planData[planKey].totalRevenue +=
-        sub.billingInterval === 'YEARLY' ? yearly : monthly;
-    }
 
-    const planList = Object.values(planData);
+      const paidChanges = paidChangesByPlanId.get(plan.id);
+
+      return {
+        planId: plan.id,
+        planCode: plan.code,
+        planName: plan.name,
+        subscriberCount:
+          plan.subscriptions.length +
+          (plan.code === 'free' ? implicitFreeSubscriberCount : 0),
+        monthlySubscribers,
+        yearlySubscribers,
+        monthlyRecurringRevenueCents: Math.round(monthlyRecurringRevenueCents),
+        planChangeRevenueCents: paidChanges?._sum.amountDueCents ?? 0,
+        chargedPlanChanges: paidChanges?._count._all ?? 0,
+      };
+    });
 
     return {
       data: planList,

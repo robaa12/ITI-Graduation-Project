@@ -174,7 +174,7 @@ export class AdminDashboardService {
         _count: { _all: true },
       }),
       this.prisma.planChangeQuote.aggregate({
-        where: { consumedAt: { not: null } },
+        where: { consumedAt: { not: null }, amountDueCents: { gt: 0 } },
         _sum: { amountDueCents: true },
         _count: { _all: true },
       }),

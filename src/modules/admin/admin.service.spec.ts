@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WorkflowAccountingService } from '../workflow-accounting/workflow-accounting.service';
 
 type UserMock = {
   findMany: jest.Mock;
@@ -18,7 +19,7 @@ type UserMock = {
 
 type PrismaMock = {
   user: UserMock;
-  project: { count: jest.Mock };
+  project: { count: jest.Mock; findMany: jest.Mock };
   socialConnection: { findMany: jest.Mock; count: jest.Mock; findUnique: jest.Mock };
   socialAccount: { findMany: jest.Mock; count: jest.Mock; findUnique: jest.Mock };
   socialPublication: {
@@ -32,13 +33,20 @@ type PrismaMock = {
     findUnique: jest.Mock;
   };
   generationCreditEvent: { count: jest.Mock };
+  plan: { findMany: jest.Mock; count: jest.Mock };
+  planChangeQuote: { groupBy: jest.Mock };
+  workflowExecution: { findMany: jest.Mock };
 };
 
 describe('AdminService user management', () => {
   let service: AdminService;
   let prisma: PrismaMock;
+  let accounting: { reconcileForPresentation: jest.Mock };
 
   beforeEach(async () => {
+    accounting = {
+      reconcileForPresentation: jest.fn(async (executions) => executions),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
@@ -53,7 +61,7 @@ describe('AdminService user management', () => {
               update: jest.fn(),
               delete: jest.fn(),
             },
-            project: { count: jest.fn() },
+            project: { count: jest.fn(), findMany: jest.fn() },
             socialConnection: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn() },
             socialAccount: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn() },
             socialPublication: {
@@ -67,7 +75,14 @@ describe('AdminService user management', () => {
               findUnique: jest.fn(),
             },
             generationCreditEvent: { count: jest.fn() },
+            plan: { findMany: jest.fn(), count: jest.fn() },
+            planChangeQuote: { groupBy: jest.fn() },
+            workflowExecution: { findMany: jest.fn() },
           },
+        },
+        {
+          provide: WorkflowAccountingService,
+          useValue: accounting,
         },
       ],
     }).compile();
@@ -200,6 +215,88 @@ describe('AdminService user management', () => {
       prisma.user.findUnique.mockResolvedValue(user);
 
       await expect(service.getAdminUserById('1')).resolves.toEqual(user);
+    });
+  });
+
+  describe('getAdminUserAnalytics', () => {
+    it('aggregates tokens and priced USD cost for every project', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        name: 'Alice',
+        email: 'alice@example.com',
+        subscription: { plan: { code: 'pro', name: 'Pro' } },
+      });
+      prisma.project.findMany.mockResolvedValue([
+        {
+          id: 'project-1',
+          name: 'Launch',
+          status: 'ACTIVE',
+          createdAt: new Date('2026-08-01T00:00:00.000Z'),
+          _count: { campaigns: 2 },
+        },
+        {
+          id: 'project-2',
+          name: 'Empty project',
+          status: 'ACTIVE',
+          createdAt: new Date('2026-08-02T00:00:00.000Z'),
+          _count: { campaigns: 0 },
+        },
+      ]);
+      prisma.workflowExecution.findMany.mockResolvedValue([
+        {
+          id: 'execution-1',
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+          estimatedCost: 0.0125,
+          costUnit: 'USD',
+          accountingStatus: 'READY',
+          usageCollectedAt: new Date('2026-08-10T00:01:00.000Z'),
+          createdAt: new Date('2026-08-10T00:00:00.000Z'),
+          strategy: { campaign: { projectId: 'project-1' } },
+          contentRun: null,
+        },
+        {
+          id: 'execution-2',
+          inputTokens: 80,
+          outputTokens: 20,
+          totalTokens: 100,
+          estimatedCost: null,
+          costUnit: null,
+          accountingStatus: 'PENDING',
+          usageCollectedAt: null,
+          createdAt: new Date('2026-08-11T00:00:00.000Z'),
+          strategy: null,
+          contentRun: { campaign: { projectId: 'project-1' } },
+        },
+      ]);
+
+      const result = await service.getAdminUserAnalytics('user-1');
+
+      expect(result.totals).toEqual({
+        projectCount: 2,
+        campaignCount: 2,
+        executionCount: 2,
+        inputTokens: 180,
+        outputTokens: 60,
+        totalTokens: 240,
+        estimatedCostUsd: 0.0125,
+        pricedExecutions: 1,
+        recordedUsageExecutions: 1,
+        missingAccountingExecutions: 1,
+      });
+      expect(accounting.reconcileForPresentation).toHaveBeenCalledTimes(1);
+      expect(result.projects[0]).toEqual(
+        expect.objectContaining({
+          id: 'project-1',
+          inputTokens: 180,
+          outputTokens: 60,
+          estimatedCostUsd: 0.0125,
+        }),
+      );
+      expect(result.projects[1]).toEqual(
+        expect.objectContaining({ id: 'project-2', executionCount: 0 }),
+      );
     });
   });
 
@@ -377,22 +474,162 @@ describe('AdminService user management', () => {
   });
 
   describe('legacy revenue endpoints', () => {
-    it('calculates per-plan revenue from subscription plan prices', async () => {
-      prisma.subscription.findMany.mockResolvedValue([
+    it('counts accounts with implicit Free access on the Free plan card', async () => {
+      prisma.plan.findMany.mockResolvedValue([
         {
-          plan: { code: 'pro', priceMonthlyCents: 1200, priceYearlyCents: 10000 },
-        },
-        {
-          plan: { code: 'pro', priceMonthlyCents: 1200, priceYearlyCents: 10000 },
+          id: 'plan-free',
+          code: 'free',
+          name: 'Free',
+          priceMonthlyCents: 0,
+          priceYearlyCents: 0,
+          subscriptions: [],
         },
       ]);
-      prisma.subscription.count.mockResolvedValue(2);
+      prisma.plan.count.mockResolvedValue(1);
+      prisma.planChangeQuote.groupBy.mockResolvedValue([]);
+      prisma.user.count.mockResolvedValue(3);
+
+      const result = await service.getAdminRevenuePerPlan(1, 20);
+
+      expect(prisma.user.count).toHaveBeenCalledWith({
+        where: {
+          role: 'USER',
+          OR: [
+            { subscription: { is: null } },
+            { subscription: { is: { plan: { is: null } } } },
+            {
+              subscription: {
+                is: { plan: { is: { active: false } } },
+              },
+            },
+            {
+              subscription: {
+                is: {
+                  status: {
+                    in: ['INCOMPLETE', 'INCOMPLETE_EXPIRED', 'CANCELLED'],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      });
+      expect(result.data[0]).toEqual(
+        expect.objectContaining({
+          planCode: 'free',
+          subscriberCount: 3,
+          monthlySubscribers: 0,
+          yearlySubscribers: 0,
+        }),
+      );
+    });
+
+    it('calculates monthly recurring revenue from current subscriptions', async () => {
+      prisma.plan.findMany.mockResolvedValue([
+        {
+          id: 'plan-pro',
+          code: 'pro',
+          name: 'Pro',
+          priceMonthlyCents: 2500,
+          priceYearlyCents: 25000,
+          subscriptions: [
+            { billingInterval: 'MONTHLY' },
+            { billingInterval: 'YEARLY' },
+          ],
+        },
+      ]);
+      prisma.plan.count.mockResolvedValue(1);
+      prisma.planChangeQuote.groupBy.mockResolvedValue([
+        {
+          planId: 'plan-pro',
+          _sum: { amountDueCents: 3200 },
+          _count: { _all: 2 },
+        },
+      ]);
 
       const result = await service.getAdminRevenuePerPlan(1, 20);
 
       expect(result.data).toEqual([
-        { planCode: 'pro', subscriberCount: 2, totalRevenue: 2400 },
+        {
+          planId: 'plan-pro',
+          planCode: 'pro',
+          planName: 'Pro',
+          subscriberCount: 2,
+          monthlySubscribers: 1,
+          yearlySubscribers: 1,
+          monthlyRecurringRevenueCents: 4583,
+          planChangeRevenueCents: 3200,
+          chargedPlanChanges: 2,
+        },
       ]);
+    });
+
+    it('keeps customer identity and current plan on per-user revenue rows', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        {
+          id: 'user-1',
+          name: 'Alice',
+          email: 'alice@example.com',
+          subscription: {
+            status: 'ACTIVE',
+            plan: { code: 'pro', name: 'Pro', active: true },
+          },
+        },
+      ]);
+      prisma.user.count.mockResolvedValue(1);
+      prisma.planChangeQuote.groupBy.mockResolvedValue([
+        {
+          userId: 'user-1',
+          _sum: { amountDueCents: 1800 },
+          _count: { _all: 2 },
+          _max: { consumedAt: new Date('2026-08-17T10:00:00.000Z') },
+        },
+      ]);
+
+      const result = await service.getAdminRevenuePerUser(1, 20);
+
+      expect(result.data[0]).toEqual(
+        expect.objectContaining({
+          userId: 'user-1',
+          user: { id: 'user-1', name: 'Alice', email: 'alice@example.com' },
+          planCode: 'pro',
+          planName: 'Pro',
+          subscriptionStatus: 'ACTIVE',
+          totalPaid: 1800,
+          paymentCount: 2,
+        }),
+      );
+    });
+
+    it('includes users without a subscription as Free customers', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        {
+          id: 'user-free',
+          name: 'Free User',
+          email: 'free@example.com',
+          subscription: null,
+        },
+      ]);
+      prisma.user.count.mockResolvedValue(1);
+      prisma.planChangeQuote.groupBy.mockResolvedValue([]);
+
+      const result = await service.getAdminRevenuePerUser(1, 20);
+
+      expect(result.data[0]).toEqual({
+        userId: 'user-free',
+        user: {
+          id: 'user-free',
+          name: 'Free User',
+          email: 'free@example.com',
+        },
+        planCode: 'free',
+        planName: 'Free',
+        subscriptionStatus: 'FREE',
+        totalPaid: 0,
+        paymentCount: 0,
+        latestPayment: null,
+      });
+      expect(result.meta.total).toBe(1);
     });
   });
 

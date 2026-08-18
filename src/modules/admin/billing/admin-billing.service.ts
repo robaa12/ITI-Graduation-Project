@@ -533,7 +533,7 @@ export class AdminBillingService {
         where: { pendingPlanId: { not: null } },
       }),
       this.prisma.planChangeQuote.aggregate({
-        where: { consumedAt: { not: null } },
+        where: { consumedAt: { not: null }, amountDueCents: { gt: 0 } },
         _sum: { amountDueCents: true },
         _count: { _all: true },
       }),

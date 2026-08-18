@@ -58,6 +58,11 @@ export class AdminController {
     return this.adminService.getAdminUserStatistics();
   }
 
+  @Get('users/:id/analytics')
+  async getAdminUserAnalytics(@Param('id') id: string) {
+    return this.adminService.getAdminUserAnalytics(id);
+  }
+
   @Get('users/:id')
   async getAdminUserById(@Param('id') id: string) {
     return this.adminService.getAdminUserById(id);
