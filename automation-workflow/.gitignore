@@ -5,3 +5,7 @@ workspace/
 mastra.db*
 mastra.duckdb*
 .env
+
+# Auto-generated workspace
+workspace/
+.mastra/oauth/

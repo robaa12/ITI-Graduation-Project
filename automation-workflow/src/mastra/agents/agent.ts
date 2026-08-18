@@ -14,85 +14,35 @@ if (Object.keys(mcpErrors).length > 0) {
 }
 
 const META_ADS_TOOLS = [
-  'metaAds_ads_get_ad_account_pages',
-  'metaAds_ads_creative_upload_image',
-  'metaAds_ads_creative_upload_video',
-  'metaAds_ads_create_campaign',
-  'metaAds_ads_create_ad_set',
-  'metaAds_ads_create_creative',
-  'metaAds_ads_create_ad',
+  'metaAds_get_account_pages',
+  'metaAds_upload_ad_image',
+  'metaAds_upload_ad_video_file',
+  'metaAds_create_campaign',
+  'metaAds_create_adset',
+  'metaAds_create_ad_creative',
+  'metaAds_create_ad',
 ] as const;
 
 type McpTool = (typeof mcpTools)[string];
-
-const DRY_RUN_DESCRIPTIONS: Record<string, string> = {
-  metaAds_ads_get_ad_account_pages:
-    'List the ad account’s connected Pages so we can pick which page_id to run the ads on.',
-  metaAds_ads_creative_upload_image:
-    'Upload an image asset to Meta and get back the image_hash used in ad creatives.',
-  metaAds_ads_creative_upload_video:
-    'Upload a video asset to Meta and get back the video_id used in ad creatives.',
-  metaAds_ads_create_campaign:
-    'Create a Facebook ad campaign with the given name, objective, status and budget.',
-  metaAds_ads_create_ad_set:
-    'Create an ad set that defines the targeting, placements, budget and schedule for a campaign.',
-  metaAds_ads_create_creative:
-    'Create an ad creative (object story spec) holding the ad copy, link, image and call-to-action.',
-  metaAds_ads_create_ad:
-    'Create an ad that binds an ad set to a creative so it can run.',
-};
-
-let dryRunStep = 0;
-
-function dryRunResult(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
-  dryRunStep += 1;
-  const step = dryRunStep;
-  console.log('\n[DRY-RUN] Step %d — %s', step, toolName);
-  console.log('  desc: %s', DRY_RUN_DESCRIPTIONS[toolName] ?? 'Meta Ads tool call (simulated).');
-  console.log('  input: %s', JSON.stringify(input, null, 2));
-  return { success: true, dry_run: true, note: 'Simulated — nothing was sent to Meta.' };
-}
 
 const metaAdsTools = Object.fromEntries(
   Object.entries(mcpTools)
     .filter(([name]) => (META_ADS_TOOLS as readonly string[]).includes(name))
     .map(([name, tool]) => {
-      const mcpTool = tool as McpTool;
+      const mcpTool = tool as McpTool & { execute: (input: unknown, context?: unknown) => Promise<unknown> };
       const id = (mcpTool.id as string) ?? name;
-      const simulate = (input: Record<string, unknown>): Record<string, unknown> => {
-        const step = dryRunStep + 1;
-        switch (name) {
-          case 'metaAds_ads_get_ad_account_pages':
-            return {
-              ...dryRunResult(name, input),
-              ad_account_pages: [
-                { id: 'dryrun_page_001', name: 'Dry Run Page', leadgen_tos_accepted: true },
-              ],
-              total_count: 1,
-            };
-          case 'metaAds_ads_creative_upload_image':
-            return { ...dryRunResult(name, input), image_hash: `dryrun_img_${step}` };
-          case 'metaAds_ads_creative_upload_video':
-            return { ...dryRunResult(name, input), video_id: `dryrun_vid_${step}` };
-          case 'metaAds_ads_create_campaign':
-            return { ...dryRunResult(name, input), campaign_id: `dryrun_campaign_${step}` };
-          case 'metaAds_ads_create_ad_set':
-            return { ...dryRunResult(name, input), ad_set_id: `dryrun_adset_${step}` };
-          case 'metaAds_ads_create_creative':
-            return { ...dryRunResult(name, input), ad_creative_id: `dryrun_creative_${step}` };
-          case 'metaAds_ads_create_ad':
-            return { ...dryRunResult(name, input), ad_id: `dryrun_ad_${step}` };
-          default:
-            return dryRunResult(name, input);
-        }
-      };
       return [
         name,
         createTool({
           id,
           description: mcpTool.description,
           inputSchema: mcpTool.inputSchema,
-          execute: async (input) => simulate((input ?? {}) as Record<string, unknown>),
+          execute: async (input, context) => {
+            console.log(`\n[LIVE] Calling ${name} with:`, JSON.stringify(input, null, 2));
+            const result = await mcpTool.execute(input ?? {}, context);
+            console.log(`[LIVE] ${name} result:`, JSON.stringify(result, null, 2));
+            return result;
+          },
         }),
       ];
     }),
@@ -138,7 +88,7 @@ export const agent = new Agent({
     ],
   },
   instructions: buildSystemPrompt(pathToFileURL(`${workspacePath}/`).href),
-  model: 'openrouter/anthropic/claude-sonnet-5',
+  model: 'openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
   defaultOptions: {
     maxSteps: 100,
     autoResumeSuspendedTools: true,
