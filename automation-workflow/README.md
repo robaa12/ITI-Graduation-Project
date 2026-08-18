@@ -135,12 +135,27 @@ The auto-run script loads these automatically — no manual input needed.
 ## How to Run
 
 ### Prerequisites
-1. **OpenRouter API key** — Add to `.env`:
-   ```bash
-   OPENROUTER_API_KEY=sk-or-v1-xxxxx
-   ```
-2. **Pipeboard token** — Already configured in `meta-oauth.mjs`
-3. **Meta ad account ID** — Set in `system-prompt.ts`: `act_1860390718288386`
+
+**Required `.env` variables (create `.env` from `.env.example`):**
+
+| Variable | Required | Why |
+|----------|----------|-----|
+| `OPENROUTER_API_KEY` | ✅ Yes | Powers the LLM agent (Nemotron free model). Without it, the agent cannot reason or call tools. |
+| `PIPEBOARD_TOKEN` | ✅ Yes | Authenticates to Pipeboard's Meta Ads MCP server. Required for all Meta Ads API calls. |
+| `META_AD_ACCOUNT_ID` | ✅ Yes | Your Meta ad account ID (`act_XXXXXXXXXXXXXX`). Used by every MCP tool call. |
+
+**Optional (for OAuth flow):**
+| Variable | Required | Why |
+|----------|----------|-----|
+| `META_ACCESS_TOKEN` | No | User access token from Graph API Explorer. Skips OAuth if provided. |
+| `META_APP_ID` | No | Facebook App ID for OAuth flow. |
+| `META_APP_SECRET` | No | Facebook App Secret for OAuth flow. |
+
+```bash
+cp .env.example .env
+# Edit .env with your values
+```
+
 4. **Add $10 credits at OpenRouter** — Required to unlock 1000 free model requests/day (free tier = 50/day)
 
 ### Option 1: Fully Automatic (`npm run dev:auto`)

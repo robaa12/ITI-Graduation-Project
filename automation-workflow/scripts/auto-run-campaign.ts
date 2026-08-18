@@ -15,15 +15,18 @@ const __dirname = dirname(__filename);
 async function loadSampleData() {
   const contentPath = join(__dirname, 'sample-content-output.json');
   const strategyPath = join(__dirname, 'sample-strategy-output.json');
+  const configPath = join(__dirname, 'campaign-config.json');
 
-  const [contentRaw, strategyRaw] = await Promise.all([
+  const [contentRaw, strategyRaw, configRaw] = await Promise.all([
     readFile(contentPath, 'utf-8'),
     readFile(strategyPath, 'utf-8'),
+    readFile(configPath, 'utf-8'),
   ]);
 
   return {
     content: JSON.parse(contentRaw),
     strategy: JSON.parse(strategyRaw),
+    config: JSON.parse(configRaw),
   };
 }
 
@@ -82,7 +85,7 @@ async function createLaunchAgent() {
     name: 'Launch Agent',
     description: 'Facebook Ads campaign launcher using free model',
     instructions: buildSystemPrompt(pathToFileURL(`${workspacePath}/`).href),
-    model: 'openrouter/nvidia/nemotron-3-nano-30b-a3b:free',
+    model: 'openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
     defaultOptions: {
       maxSteps: 100,
       autoResumeSuspendedTools: true,
@@ -97,7 +100,7 @@ async function runCampaign() {
   console.log('🚀 Auto-running Facebook campaign creation from sample data...\n');
 
   try {
-    const { content, strategy } = await loadSampleData();
+    const { content, strategy, config } = await loadSampleData();
     const facebookEntries = filterFacebookEntries(content.calendar);
 
     console.log(`📅 Content entries: ${content.calendar.length} total, ${facebookEntries.length} Facebook-only`);
@@ -113,7 +116,10 @@ ${JSON.stringify(strategy, null, 2)}
 CONTENT WORKFLOW OUTPUT (filtered to Facebook only):
 ${JSON.stringify({ calendar: facebookEntries }, null, 2)}
 
-Create a Facebook conversion campaign using the above data. Use the Facebook platform entries from the content calendar for ad creatives (primary text, CTA, images). All entities should be created as PAUSED.`;
+CAMPAIGN CONFIG:
+${JSON.stringify(config, null, 2)}
+
+Create a Facebook conversion campaign using the above data. Use the Facebook platform entries from the content calendar for ad creatives (primary text, CTA, images). Use the landingPageUrl from config for all creatives. All entities should be created as PAUSED.`;
 
     console.log('🤖 Creating launch agent with free model...\n');
     const launchAgent = await createLaunchAgent();

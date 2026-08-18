@@ -88,7 +88,7 @@ export const agent = new Agent({
     ],
   },
   instructions: buildSystemPrompt(pathToFileURL(`${workspacePath}/`).href),
-  model: 'openrouter/anthropic/claude-sonnet-5',
+  model: 'openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
   defaultOptions: {
     maxSteps: 100,
     autoResumeSuspendedTools: true,

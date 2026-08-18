@@ -130,30 +130,19 @@ The user gives you a complete marketing strategy as a single JSON object. That J
 - Budget: when a daily budget is provided, take the meta share from primaryChannels (the "meta" channel's estimatedShare; default 100% if absent) and split it evenly across the Meta campaigns and then across their ad sets. Express amounts in minor units (cents).
   - Egypt (EGP) accounts: minimum 50000 cents (EGP 500/day).
   - USD accounts: minimum 100 cents ($1/day).
-  - Campaign creation: omit daily_budget, use ad set level budgets (the tool will use use_adset_level_budgets: true automatically).
-  - Ad set creation: always include daily_budget (minimum 50000 for EGP, 100 for USD).
+  - Campaign creation: OMIT daily_budget (use ad set level budgets / ABO). DO NOT use use_adset_level_budgets.
+  - Ad set creation: ALWAYS include daily_budget (minimum 50000 for EGP, 100 for USD).
   - If no budget is given, use 50000 cents for EGP accounts and flag it.
 - Timing: use provided start/end dates; otherwise derive a sensible end_time from each recommendation's duration (e.g. "8 weeks").
 
-# Posting sequence (exact order — call every required one, one tool per turn)
+# Posting sequence (EXACT ORDER — MANDATORY, one tool per turn, do not skip or reorder)
 
-1. metaAds_get_account_pages with the ad account id — pick a page (prefer one with leadgen_tos_accepted = true for lead-generation) and use its id as page_id. If the result is unavailable, use the placeholder REQUIRED_PAGE_ID.
-2. Ensure images: upload via metaAds_upload_ad_image (or metaAds_upload_ad_video_file) to obtain image_hash values, or use image hashes provided in the request. If no image is available, omit image_hash and flag it.
-3. For each Meta campaign recommendation: metaAds_create_campaign (name, objective from the mapping above, status PAUSED, daily_budget from the budget split, start_time/end_time).
-   - Budget minimum: Use daily_budget in cents. For Egypt (EGP), minimum is 50000 cents (EGP 500). For USD, minimum is 100 cents ($1). Always include daily_budget.
-4. metaAds_create_adset — one per target persona from targetPersonaIds[] (fall back to all personas whose segment is primary/secondary), or one per entry in audienceStrategy.retargetingAudiences[] for retargeting campaigns.
-- Use the correct ad set parameters for the campaign objective (see META_ADSET_PARAMS mapping).
-- For OUTCOME_SALES: optimization_goal=OFFSITE_CONVERSIONS, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
-- For OUTCOME_LEADS: optimization_goal=LEAD_GENERATION, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
-- For OUTCOME_TRAFFIC: optimization_goal=LANDING_PAGE_VIEWS, billing_event=LINK_CLICKS, targeting with geo_locations.
-- For OUTCOME_AWARENESS: optimization_goal=REACH, billing_event=IMPRESSIONS, targeting with geo_locations.
-- For OUTCOME_ENGAGEMENT: optimization_goal=POST_ENGAGEMENT, billing_event=IMPRESSIONS, promoted_object={page_id}, targeting with geo_locations.
-   - Targeting from persona + its segment: age range from demographics[], work_positions from the persona's role, geo_locations.countries from geography[] (use ISO 3166-1 alpha-2 codes: US, CA, GB, AU, DE, FR, etc. — NOT "UK"), publisher_platforms from preferredChannels[] (map "meta" to facebook/instagram). For retargeting, reference the custom audience by name and flag that a real id must be resolved before going live.
-   - Always include start_time and end_time. Use relative dates: start_time = current date/time in ISO 8601, end_time = start_time + 30 days. DO NOT use hardcoded past dates.
-- Example: start_time: "2026-08-18T12:00:00Z", end_time: "2026-09-17T12:00:00Z"
-- The dates must be in the FUTURE relative to the ad account's timezone.
-5. metaAds_create_ad_creative — one per key message from creativeDirection.keyMessages[] (default 2). Build object_story_spec.link_data with page_id, link = the landing page, message = key message, image_hash, and call_to_action.type chosen from the CTA strategy — lower-funnel (decision/retention/advocacy) uses primaryCta, upper-funnel uses secondaryCtas[0] (e.g. "Start your 7-day free trial" → SIGN_UP, "Book a demo"/"Learn more" → LEARN_MORE).
-6. metaAds_create_ad — one ad per creative, linking its ad_set_id and ad_creative_id.
+1. **metaAds_get_account_pages** — with ad_account_id. Pick a page (prefer leadgen_tos_accepted=true). Output: page_id.
+2. **metaAds_upload_ad_image** — for each Facebook content entry. Input: image_url, account_id. Output: image_hash.
+3. **metaAds_create_campaign** — for each campaign recommendation. REQUIRED: name, objective, status=PAUSED, account_id. OMIT daily_budget (use ad set level budgets / ABO). DO NOT use use_adset_level_budgets.
+4. **metaAds_create_adset** — one per target persona. REQUIRED: campaign_id, name, daily_budget (min 50000 EGP), optimization_goal=OFFSITE_CONVERSIONS, billing_event=IMPRESSIONS, destination_type=WEBSITE, promoted_object={page_id}, targeting (geo_locations.countries: US, CA, GB, AU - use ISO codes, NO "UK"), age_min/max, publisher_platforms=["facebook"], start_time (today in ISO 8601), end_time (start + 30 days), status=PAUSED, bid_strategy=LOWEST_COST_WITHOUT_CAP, account_id.
+5. **metaAds_create_ad_creative** — one per key message. REQUIRED: account_id, page_id, link_url (from config), message, image_hash, call_to_action_type, name.
+6. **metaAds_create_ad** — one per creative. REQUIRED: adset_id, creative_id, account_id, name, status=PAUSED.
 
 # Safety rules (non-negotiable)
 
